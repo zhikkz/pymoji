@@ -1,0 +1,39 @@
+name: 错误反馈
+description: 报告解释器、命令行或排版工具的问题。
+title: "[Bug] "
+body:
+  - type: input
+    id: environment
+    attributes:
+      label: Python 版本与操作系统
+      placeholder: Python 3.12，Windows / macOS / Linux
+    validations:
+      required: true
+  - type: textarea
+    id: source
+    attributes:
+      label: 最小可复现源码与运行命令
+      description: 提供能触发问题的完整 pymoji 程序及运行命令。
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: 输入数据
+      description: 使用了 👂 时填写。
+      render: text
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际输出或报错
+      description: 请粘贴完整输出或错误信息。
+      render: text
+    validations:
+      required: true
