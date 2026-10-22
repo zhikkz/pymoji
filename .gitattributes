@@ -1,0 +1,3 @@
+* text=auto eol=lf
+*.pymoji whitespace=-blank-at-eol
+docs/language.md whitespace=-blank-at-eol
