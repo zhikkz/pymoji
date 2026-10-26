@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 # Copyright 2026 zhikkz
 """
 pymoji 解释器 v1.2

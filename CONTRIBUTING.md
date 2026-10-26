@@ -20,4 +20,4 @@ python -m unittest -v test_pymoji
 
 ## 许可证
 
-项目采用 [Apache License 2.0](LICENSE)。提交贡献即表示你有权提交这些内容，并同意以同一许可证授权该贡献。
+项目采用 [MIT License](LICENSE)。提交贡献即表示你有权提交这些内容，并同意以同一许可证授权该贡献。

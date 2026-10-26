@@ -94,4 +94,4 @@ python -m unittest -v test_pymoji
 
 ## 许可证
 
-本项目使用 [Apache License 2.0](LICENSE)，允许使用、修改和分发，并提供明确的专利授权。Copyright 2026 zhikkz。
+本项目使用 [MIT License](LICENSE)，允许商业使用、修改和分发，须保留版权与许可声明。Copyright 2026 zhikkz。

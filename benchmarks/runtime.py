@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 """可复现的运行时基准；解析、解释器初始化与 GC 不计入执行时间。"""
 import argparse
 import gc
