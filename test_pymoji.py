@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""pymoji 1.1 语义回归、任意排版、边界与命令行验证。只依赖 Python 标准库。"""
+"""pymoji 语义回归、任意排版、边界与命令行验证。只依赖 Python 标准库。"""
 import io
+import math
 import os
 import random
 import subprocess
@@ -80,6 +81,77 @@ class PymojiTests(unittest.TestCase):
         for source, expected in cases:
             with self.subTest(source=source):
                 self.assert_program(source, expected)
+
+    def test_cyclic_comparisons_find_sort_and_extrema(self):
+        setup = 'a⬅️🎁🎀🔚a📥a🔚b⬅️🎁🎀🔚b📥b🔚'
+        self.assert_program(setup + '📢a=b,a≠b,a<b,a>b,a≤b,a≥b', '✅ ❌ ❌ ❌ ✅ ✅\n')
+        self.assert_program(setup + '📢🔎🤜🎁a🎀,b🤛,📏🔃🤜🎁a,b🎀🤛', '0 2\n')
+        self.assert_program(setup + '📢👑🤜a,b🤛=a,🐜🤜a,b🤛=b', '✅ ✅\n')
+        # 循环之外的元素仍须比较，长度也不能忽略。
+        self.assert_program(setup + 'a📥1🔚b📥2🔚📢a=b,a<b,b>a,🔎🤜🎁a🎀,b🤛',
+                            '❌ ✅ ✅ -1\n')
+        self.assert_program(setup + 'b📥0🔚📢a=b,a<b,b>a', '❌ ✅ ✅\n')
+        # 相互引用，以及共享子列表在不同位置出现。
+        self.assert_program('a⬅️🎁🎀🔚x⬅️🎁a🎀🔚a📥x🔚b⬅️🎁🎀🔚y⬅️🎁b🎀🔚b📥y🔚📢a=b,a≤b',
+                            '✅ ✅\n')
+        self.assert_program('a⬅️🎁1🎀🔚b⬅️🎁1🎀🔚📢🎁a,a🎀=🎁b,🎁2🎀🎀,🎁a,a🎀=🎁b,b🎀',
+                            '❌ ✅\n')
+
+    def test_deep_comparisons_use_bounded_python_stack(self):
+        interp = pymoji.Interpreter(max_mem_mb=0)
+        node = pymoji.Const(7, None)
+        a, b, c = 1, 1, 2
+        for _ in range(5000):
+            a, b, c = [a], [b], [c]
+        self.assertTrue(interp.equal(a, b, node))
+        self.assertFalse(interp.equal(a, c, node))
+        self.assertEqual(interp.order(a, b, node), 0)
+        self.assertEqual(interp.order(a, c, node), -1)
+
+    def test_comparisons_check_memory_and_keep_location(self):
+        a, b = [0] * (pymoji.TICK * 2), [0] * (pymoji.TICK * 2)
+        node = pymoji.Const(7, None)
+        operations = [lambda i: i.equal(a, b, node), lambda i: i.order(a, b, node),
+                      lambda i: pymoji.builtin_find(i, [[a], b], node),
+                      lambda i: pymoji.builtin_sort(i, [[a, b]], node)]
+        for operation in operations:
+            interp = pymoji.Interpreter(max_mem_mb=0)
+            interp.max_mem = 1048576
+            interp.mem_base = 0
+            interp.read_mem = lambda: 2 * 1048576
+            with self.assertRaises(pymoji.PymojiError) as raised:
+                operation(interp)
+            self.assertEqual((raised.exception.kind, raised.exception.line), ('资源超限', 7))
+        source = 'a⬅️🎁0🎀✖️3000🔚b⬅️🎁0🎀✖️3000🔚\n🏭f🤜🤛👉↩️a=b👈\n📢f🤜🤛'
+        # 直接验证比较产生的资源错误经函数调用保留原行号和调用路径。
+        program = pymoji.Parser(pymoji.tokenize(source)).parse_program()
+        interp = pymoji.Interpreter(max_mem_mb=0)
+        interp.run(program[:2])
+        interp.max_mem, interp.mem_base = 1048576, 0
+        interp.read_mem = lambda: 2 * 1048576
+        with self.assertRaises(pymoji.PymojiError) as raised:
+            interp.run(program[2:])
+        self.assertEqual(raised.exception.line, 2)
+        self.assertEqual(raised.exception.trace, [('f', 3)])
+
+    def test_return_propagates_through_blocks_and_loops(self):
+        for loop in ('🔁✅', '🔂i🛫1🛬3', '🔂i∈🎁1,2🎀', '🔂i∈字典🤜🎁🎁1,2🎀🎀🤛'):
+            with self.subTest(loop=loop):
+                self.assert_program('🏭f🤜🤛👉' + loop + '👉🤔✅👉↩️42👈📢0👈📢0👈📢f🤜🤛', '42\n')
+        self.assert_program('🏭f🤜🤛👉🔂i🛫1🛬3👉🔁✅👉↩️👈👈📢0👈📢f🤜🤛', '🕳️\n')
+        self.assert_program('🏭f🤜x🤛👉↩️x👈🏭g🤜🤛👉f🤜1🤛🔚📢2🔚↩️f🤜3🤛👈📢g🤜🤛', '2\n3\n')
+
+    def test_arithmetic_dispatch_preserves_types_and_limits(self):
+        self.assert_program('a⬅️1.0🔚a⬆️1🔚📢类型🤜a🤛,类型🤜1➕2🤛,类型🤜1.0➕2🤛',
+                            '小数 整数 小数\n')
+        for source in ('📢2🚀9999➕2🚀9999', 'a⬅️2🚀9999🔚a⬆️a', '📢2🚀9999✖️2'):
+            rc, _, err = self.execute(source)
+            self.assertEqual(rc, 1)
+            self.assertIn('整数太大', err)
+        for source in ('📢✅➕1', 'a⬅️✅🔚a⬆️1'):
+            rc, _, err = self.execute(source)
+            self.assertEqual(rc, 1)
+            self.assertIn('➕ 不能用在真假值和数字之间', err)
 
     def test_multilingual_names_and_normalization(self):
         cases = [
@@ -191,6 +263,90 @@ class PymojiTests(unittest.TestCase):
         for source, expected in cases:
             with self.subTest(source=source):
                 self.assert_program(source, expected)
+
+    def test_numeric_text_variants_and_scientific_roundtrip(self):
+        self.assert_program('📢🔢🤜🔤➖️5🔡🤛,🔢🤜🔤➕︎１２🔡🤛,🔣🤜🔤➖️1×10^➖️3🔡🤛', '-5 12 -0.001\n')
+        self.assert_program('📢🔣🤜🧵🤜🔣🤜🔤1e16🔡🤛🤛🤛=🔣🤜🔤1e16🔡🤛', '✅\n')
+        rng = random.Random(16)
+        interp, node = pymoji.Interpreter(max_mem_mb=0), pymoji.Const(1, None)
+        values = [1e16, -1e16, 1e-16, 5e-324, sys.float_info.max, 0.0]
+        values += [math.ldexp(rng.random() - 0.5, rng.randrange(-1073, 1024)) for _ in range(300)]
+        for value in values:
+            with self.subTest(value=value):
+                text = pymoji.builtin_text(interp, [value], node)
+                self.assertEqual(pymoji.builtin_float(interp, [text], node), value)
+        for value in ('1×10^', '1×10^2e3', 'nan', 'inf'):
+            self.assertEqual(self.execute('📢🔣🤜🔤' + value + '🔡🤛')[0], 1)
+
+    def test_rounding_and_fixed_decimal_format(self):
+        cases = [
+            ('📢🎯🤜0.1➕0.2,2🤛,🖋️🤜0.1➕0.2,2🤛', '0.3 0.30\n'),
+            ('📢四舍五入🤜2.5🤛,四舍五入🤜➖2.5🤛,四舍五入🤜2.675,2🤛', '3 -3 2.68\n'),
+            ('📢四舍五入🤜125,➖1🤛,四舍五入🤜➖125,➖1🤛', '130 -130\n'),
+            ('📢小数格式🤜1.2🤛,小数格式🤜➖0.001,2🤛,小数格式🤜9.999,2🤛', '1.20 0.00 10.00\n'),
+            ('📢小数格式🤜12,0🤛,类型🤜小数格式🤜1🤛🤛,类型🤜四舍五入🤜1.2🤛🤛', '12 文字 整数\n'),
+            ('📢四舍五入🤜2🚀200,2🤛=2🚀200,📏小数格式🤜1,3000🤛', '✅ 3002\n'),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assert_program(source, expected)
+        for source in ('📢四舍五入🤜✅🤛', '📢小数格式🤜🔤1🔡🤛', '📢四舍五入🤜1,0.5🤛',
+                       '📢小数格式🤜1,➖1🤛', '📢四舍五入🤜1,3001🤛', '📢四舍五入🤜1,➖3001🤛',
+                       '📢小数格式🤜1,2🚀200🤛', '📢四舍五入🤜🔣🤜🔤1.79e308🔡🤛,➖308🤛'):
+            rc, _, err = self.execute(source)
+            with self.subTest(source=source):
+                self.assertEqual(rc, 1)
+                self.assertNotIn('解释器内部错误', err)
+        self.assertIn('内存上限', self.execute('📢小数格式🤜1,3000🤛', max_mem_mb=0.001)[2])
+
+    def test_dictionary_operations_and_key_semantics(self):
+        cases = [
+            ('d⬅️🗃️🤜🤛🔚📢📏d,真假🤜d🤛,类型🤜d🤛,取值🤜d,🔤x🔡🤛', '0 ❌ 字典 🕳️\n'),
+            ('d⬅️字典🤜🎁🎁🔤a🔡,1🎀,🎁🔤b🔡,2🎀🎀🤛🔚d📍🔤a🔡⬆️3🔚d📍🔤b🔡⬇️1🔚'
+             'd📍🔤c🔡⬅️5🔚📢d📍🔤a🔡,键🤜d🤛,值🤜d🤛', '4 🎁🔤a🔡, 🔤b🔡, 🔤c🔡🎀 🎁4, 1, 5🎀\n'),
+            ('d⬅️字典🤜🎁🎁1,🔤数🔡🎀,🎁✅,🔤真🔡🎀,🎁🕳️,0🎀,🎁🔤1🔡,9🎀🎀🤛🔚'
+             'd📍1.0⬅️2🔚📢📏d,d📍1,d📍✅,d📍🕳️,d📍🔤1🔡', '4 2 真 0 9\n'),
+            ('d⬅️字典🤜🎁🎁1,2🎀,🎁1.0,3🎀🎀🤛🔚📢键🤜d🤛,键值对🤜d🤛', '🎁1🎀 🎁🎁1, 3🎀🎀\n'),
+            ('d⬅️字典🤜🤛🔚📢🔐🤜d,1🤛,🫴🤜d,1,0🤛🔚d📍1⬅️🕳️🔚📢含键🤜d,1🤛,取值🤜d,1,9🤛,🗑️🤜d,1🤛,📏d',
+             '❌ 0\n✅ 🕳️ 🕳️ 0\n'),
+            ('d⬅️字典🤜🎁🎁1,🎁0🎀🎀🎀🤛🔚c⬅️复制🤜d🤛🔚c📍1📍0⬅️8🔚c📍2⬅️9🔚📢d📍1,📏d,📏c',
+             '🎁8🎀 1 2\n'),
+            ('d⬅️字典🤜🎁🎁1,0🎀,🎁2,0🎀🎀🤛🔚🔂k∈d👉📢k🔚d📍3⬅️0👈📢📏d', '1\n2\n3\n'),
+            ('d⬅️字典🤜🎁🎁🔤a🔡,1🎀🎀🤛🔚📢d,文字🤜d🤛',
+             '🗃️🤜🎁🎁🔤a🔡, 1🎀🎀🤛 🗃️🤜🎁🎁🔤a🔡, 1🎀🎀🤛\n'),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assert_program(source, expected)
+
+    def test_dictionary_cycles_equality_and_copying(self):
+        setup = 'a⬅️字典🤜🤛🔚a📍1⬅️a🔚b⬅️字典🤜🤛🔚b📍1⬅️b🔚'
+        self.assert_program(setup + '📢a=b,a,查找🤜🎁a🎀,b🤛', '✅ 🗃️🤜🎁🎁1, 🗃️…🎀🎀🤛 0\n')
+        self.assert_program(setup + 'a📍2⬅️1🔚b📍2⬅️2🔚📢a=b', '❌\n')
+        self.assert_program('a⬅️字典🤜🎁🎁1,2🎀,🎁3,4🎀🎀🤛🔚b⬅️字典🤜🎁🎁3,4🎀,🎁1,2🎀🎀🤛🔚📢a=b', '✅\n')
+        self.assert_program('a⬅️字典🤜🤛🔚x⬅️🎁a🎀🔚a📍0⬅️x🔚b⬅️字典🤜🤛🔚y⬅️🎁b🎀🔚b📍0⬅️y🔚📢a=b', '✅\n')
+        self.assert_program('d⬅️字典🤜🎁🎁1,🎁0🎀🎀🎀🤛🔚a⬅️🎁d🎀✖️2🔚a📍0📍1📍0⬅️8🔚📢a📍1📍1,d📍1',
+                            '🎁0🎀 🎁0🎀\n')
+        self.assert_program('a⬅️🎁字典🤜🤛🎀✖️2🔚a📍0📍1⬅️8🔚📢📏a📍1', '0\n')
+        self.assert_program(setup + 'c⬅️🎁a🎀✖️2🔚c📍0📍2⬅️8🔚📢c📍0📍1=c📍0,📏c📍1', '✅ 1\n')
+
+    def test_dictionary_errors_and_resource_limits(self):
+        cases = [('📢字典🤜1🤛', '需要列表'), ('📢字典🤜🎁1🎀🤛', '恰有两项'),
+                 ('📢字典🤜🎁🎁🎁🎀,1🎀🎀🤛', '键必须'), ('📢键🤜1🤛', '需要字典'),
+                 ('📢字典🤜🤛📍1', '没有键'), ('d⬅️字典🤜🤛🔚d📍1⬆️1', '没有键'),
+                 ('📢删除🤜字典🤜🤛,1🤛', '没有键'), ('📢取值🤜字典🤜🤛,🎁🎀🤛', '键必须'),
+                 ('📢字典🤜🤛<字典🤜🤛', '不能比较大小')]
+        for source, fragment in cases:
+            with self.subTest(source=source):
+                rc, _, err = self.execute(source)
+                self.assertEqual(rc, 1)
+                self.assertIn(fragment, err)
+                self.assertIn('第 1 行', err)
+                self.assertNotIn('解释器内部错误', err)
+        interp, node = pymoji.Interpreter(max_mem_mb=0), pymoji.Const(1, None)
+        interp.max_mem = 1000
+        with self.assertRaises(pymoji.PymojiError):
+            pymoji.builtin_dict(interp, [[[i, i] for i in range(100)]], node)
 
     def test_text_builtins(self):
         cases = [
@@ -348,7 +504,7 @@ class PymojiTests(unittest.TestCase):
             ('📢🎁1🎀📍➖1', '这里需要一个值'),
             ('📢🎁1🎀📍🤜➖1🤛', '超出范围'),
             ('📢📤🎁🎀', '空列表'),
-            ('📢📏1', '只能量列表或文字'),
+            ('📢📏1', '只能量列表、文字或字典'),
             ('a⬅️🔤甲🔡🔚a📍0⬅️1', '不能单独修改'),
             ('a⬅️1🔚a📥2', '只能往列表'),
             ('📢1🤜2🤛', '不是函数'),
@@ -451,7 +607,11 @@ class PymojiTests(unittest.TestCase):
             return subprocess.run([sys.executable, script, *args], encoding='utf-8',
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 
-        self.assertEqual(cli('--version').stdout.strip(), 'pymoji 1.1')
+        self.assertEqual(cli('--version').stdout.strip(), 'pymoji ' + pymoji.__version__)
+        self.assertIn('pymoji v' + pymoji.__version__, cli('--help').stdout)
+        cyclic = 'a⬅️🎁🎀🔚a📥a🔚b⬅️🎁🎀🔚b📥b🔚📢a=b,a<b'
+        result = cli('-c', cyclic, '--max-depth', '100000', '--max-mem', '256')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '✅ ❌\n', ''))
         self.assertEqual(cli('-c', '📢1').stdout, '1\n')
         self.assertEqual(cli('-c', '📢1➗0').returncode, 1)
         self.assertEqual(cli('/no/such/pymoji/file').returncode, 2)

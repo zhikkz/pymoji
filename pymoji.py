@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 zhikkz
 """
-pymoji 解释器 v1.1
+pymoji 解释器 v1.2
 =======================
 
 pymoji 是一门使用 emoji 语法、支持多语种名字、以矩形排版为规范的编程语言。
@@ -28,7 +30,9 @@ pymoji 是一门使用 emoji 语法、支持多语种名字、以矩形排版为
 import argparse
 from array import array
 from bisect import bisect_right
+from decimal import Decimal, ROUND_HALF_UP, localcontext
 import functools
+import operator
 import os
 import random
 import re
@@ -36,7 +40,7 @@ import sys
 import threading
 import unicodedata
 
-__version__ = '1.1'
+__version__ = '1.2'
 
 # ════════════════════════════════════════════════════════════════
 # 0. 资源上限（默认值，可用命令行参数修改）
@@ -472,13 +476,11 @@ ListLit = _node('ListLit', 'items')                # 🎁 … 🎀
 Index = _node('Index', 'obj', 'index')             # 列表📍位置
 Call = _node('Call', 'func', 'args')               # 函数(参数…)
 Unary = _node('Unary', 'op', 'operand')            # ➖x 📏x 📤x 👀x 🚫x
-Binary = _node('Binary', 'op', 'left', 'right')    # ➕ ➖ ✖️ ➗ ✂️ 🥡 🚀
 Logic = _node('Logic', 'op', 'left', 'right')      # 🤝 🔀
 Compare = _node('Compare', 'ops', 'operands')      # = ≠ < > ≤ ≥（可连写）
 Input = _node('Input')                             # 👂
 # —— 语句 ——
 Assign = _node('Assign', 'target', 'value')        # 🍎 ⬅️ 值
-Update = _node('Update', 'target', 'op', 'value')  # 🍎 ⬆️ 值 / 🍎 ⬇️ 值
 Push = _node('Push', 'target', 'value')            # 列表 📥 值
 ExprStmt = _node('ExprStmt', 'expr')               # 单独一行的函数调用 / 📤 / 👂
 Print = _node('Print', 'args', 'newline')          # 📢 / 💬
@@ -490,6 +492,22 @@ FuncDef = _node('FuncDef', 'name', 'params', 'body', 'local_names')  # 🏭 名�
 Return = _node('Return', 'value')                  # ↩️
 Break = _node('Break')                             # 🛑
 Continue = _node('Continue')                       # ⏭️
+
+
+class Binary(Node):
+    __slots__ = ('op', 'left', 'right', 'integer_op')
+
+    def __init__(self, line, op, left, right):
+        self.line, self.op, self.left, self.right = line, op, left, right
+        self.integer_op = INTEGER_OPS.get(op)
+
+
+class Update(Node):
+    __slots__ = ('target', 'op', 'value', 'integer_op')
+
+    def __init__(self, line, target, op, value):
+        self.line, self.target, self.op, self.value = line, target, op, value
+        self.integer_op = INTEGER_OPS[op]
 
 
 BLOCK_STATEMENTS = (If, While, ForRange, ForEach, FuncDef)
@@ -883,7 +901,7 @@ class Parser:
 # ════════════════════════════════════════════════════════════════
 # 7. 运行时的值
 # ════════════════════════════════════════════════════════════════
-#   数字 → int / float      文字 → str      列表 → list
+#   数字 → int / float      文字 → str      列表 → list      字典 → Dictionary
 #   ✅ ❌ → True / False      🕳️ → None       函数 → Function / Builtin
 
 class Function:
@@ -906,6 +924,22 @@ class Builtin:
         self.arities = arities          # 允许的参数个数；None 表示不限
 
 
+class Dictionary:
+    """保持插入顺序；内部键带类型标签，避免 Python 把 ✅、1 当成同一个键。"""
+    __slots__ = ('data',)
+
+    def __init__(self):
+        self.data = {}              # (类型标签, 键) → (首次插入的键, 值)
+
+    def __len__(self):
+        return len(self.data)
+
+
+def _dict_value_pairs(left, right):
+    for key, (_, value) in left.data.items():
+        yield value, right.data[key][1]
+
+
 class Env:
     """一层作用域。全局一层；每调用一次函数新建一层，parent 指向函数定义处的作用域。"""
     __slots__ = ('vars', 'parent', 'local_names')
@@ -924,9 +958,10 @@ class ContinueSignal(Exception):
     pass
 
 
-class ReturnSignal(Exception):
+class ReturnSignal:
+    __slots__ = ('value',)
+
     def __init__(self, value):
-        super().__init__()
         self.value = value
 
 
@@ -946,6 +981,8 @@ def type_name(v):
         return '文字'
     if t is list:
         return '列表'
+    if t is Dictionary:
+        return '字典'
     if t is Function or t is Builtin:
         return '函数'
     return '未知的值'
@@ -975,6 +1012,16 @@ def _mb(nbytes):
 OP_SYMBOL = {'+': '➕', '-': '➖', '*': '✖️', '/': '➗', '//': '✂️', '%': '🥡', '^': '🚀'}
 _NUMBER_RE = re.compile(r'[+-]?[0-9]+(\.[0-9]+)?')
 _NUMBER_TYPES = frozenset((int, float))
+_UNBOUND = object()
+
+
+def _divide(a, b):
+    return a // b if type(a) is int and type(b) is int and a % b == 0 else a / b
+
+
+NUMERIC_OPS = {'+': operator.add, '-': operator.sub, '*': operator.mul,
+               '/': _divide, '//': operator.floordiv, '%': operator.mod}
+INTEGER_OPS = {op: NUMERIC_OPS[op] for op in ('+', '-', '*')}
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1119,11 +1166,18 @@ class Interpreter:
         self.steps += 1
         if self.steps > self.next_tick:
             self.tick(node)
-        self.exec_table[type(node)](node, env)
+        return self.exec_table[type(node)](node, env)
 
     def exec_block(self, stmts, env):
+        dispatch = self.exec_table
         for s in stmts:
-            self.exec(s, env)
+            # 热路径直接分派，省去每条语句额外一次 Python 方法调用。
+            self.steps += 1
+            if self.steps > self.next_tick:
+                self.tick(s)
+            result = dispatch[type(s)](s, env)
+            if result is not None:
+                return result
 
     def exec_assign(self, node, env):
         value = self.eval(node.value, env)
@@ -1132,11 +1186,18 @@ class Interpreter:
             env.vars[target.key] = value
         else:
             seq, i = self.locate(target, env)
-            seq[i] = value
+            if type(seq) is Dictionary:
+                self.dict_set(seq, i, value, target)
+            else:
+                seq[i] = value
 
     def locate(self, target, env):
-        """算出「名字📍位置」指向哪个列表的哪个格子（用于修改）。"""
+        """算出 📍 指向的列表位置或字典键（用于修改）。"""
         seq = self.eval(target.obj, env)
+        if type(seq) is Dictionary:
+            key = self.eval(target.index, env)
+            self.dict_key(key, target)
+            return seq, key
         if type(seq) is not list:
             if type(seq) is str:
                 self.fail(target, '文字里的字符不能单独修改（可以拼出一段新的文字）')
@@ -1148,10 +1209,17 @@ class Interpreter:
         target = node.target
         if type(target) is Name:
             old = self.lookup(target, env)
-            env.vars[target.key] = self.binary(node.op, old, delta, node)
+            if type(old) is int and type(delta) is int:
+                env.vars[target.key] = self.checked_number(node.integer_op(old, delta), node)
+            else:
+                env.vars[target.key] = self.binary(node.op, old, delta, node)
         else:
             seq, i = self.locate(target, env)
-            seq[i] = self.binary(node.op, seq[i], delta, node)
+            if type(seq) is Dictionary:
+                value = self.binary(node.op, self.dict_get(seq, i, target), delta, node)
+                self.dict_set(seq, i, value, target)
+            else:
+                seq[i] = self.binary(node.op, seq[i], delta, node)
 
     def exec_push(self, node, env):
         seq = self.eval(node.target, env)
@@ -1172,7 +1240,7 @@ class Interpreter:
             t = type(v)
             if t is str:
                 buf.append(v)
-            elif t is list:
+            elif t is list or t is Dictionary:
                 self.render(v, self.emitter(buf), node)
             else:
                 buf.append(self.scalar(v))
@@ -1193,9 +1261,9 @@ class Interpreter:
 
     def exec_if(self, node, env):
         if self.truthy(self.eval(node.cond, env)):
-            self.exec_block(node.body, env)
+            return self.exec_block(node.body, env)
         elif node.orelse is not None:
-            self.exec_block(node.orelse, env)
+            return self.exec_block(node.orelse, env)
 
     def exec_while(self, node, env):
         while True:
@@ -1205,7 +1273,9 @@ class Interpreter:
             if not self.truthy(self.eval(node.cond, env)):
                 break
             try:
-                self.exec_block(node.body, env)
+                result = self.exec_block(node.body, env)
+                if result is not None:
+                    return result
             except BreakSignal:
                 break
             except ContinueSignal:
@@ -1228,7 +1298,9 @@ class Interpreter:
                 self.tick(node)
             env.vars[key] = value
             try:
-                self.exec_block(node.body, env)
+                result = self.exec_block(node.body, env)
+                if result is not None:
+                    return result
             except BreakSignal:
                 break
             except ContinueSignal:
@@ -1242,8 +1314,10 @@ class Interpreter:
             items = list(coll)                           # 遍历开始那一刻的快照
         elif type(coll) is str:
             items = self.glyphs(coll, node)
+        elif type(coll) is Dictionary:
+            items = builtin_keys(self, [coll], node)
         else:
-            self.fail(node, f'∈ 后面要是列表或文字，这里是{type_name(coll)}')
+            self.fail(node, f'∈ 后面要是列表、文字或字典，这里是{type_name(coll)}')
         key = node.var.key
         for item in items:
             self.steps += 1
@@ -1251,7 +1325,9 @@ class Interpreter:
                 self.tick(node)
             env.vars[key] = item
             try:
-                self.exec_block(node.body, env)
+                result = self.exec_block(node.body, env)
+                if result is not None:
+                    return result
             except BreakSignal:
                 break
             except ContinueSignal:
@@ -1261,7 +1337,7 @@ class Interpreter:
         env.vars[node.name.key] = Function(node.name.text, node.params, node.body, env, node.local_names)
 
     def exec_return(self, node, env):
-        raise ReturnSignal(None if node.value is None else self.eval(node.value, env))
+        return ReturnSignal(None if node.value is None else self.eval(node.value, env))
 
     def exec_break(self, node, env):
         raise BreakSignal()
@@ -1271,7 +1347,14 @@ class Interpreter:
 
     # ─────────────── 表达式 ───────────────
     def eval(self, node, env):
-        return self.eval_table[type(node)](node, env)
+        kind = type(node)
+        if kind is Const:
+            return node.value
+        if kind is Name:
+            value = env.vars.get(node.key, _UNBOUND)
+            if value is not _UNBOUND:
+                return value
+        return self.eval_table[kind](node, env)
 
     def eval_const(self, node, env):
         return node.value
@@ -1280,8 +1363,9 @@ class Interpreter:
         key = node.key
         e = env
         while e is not None:
-            if key in e.vars:
-                return e.vars[key]
+            value = e.vars.get(key, _UNBOUND)
+            if value is not _UNBOUND:
+                return value
             if e.local_names is not None and key in e.local_names:
                 outer = e.parent
                 while outer is not None and key not in outer.vars:
@@ -1305,7 +1389,30 @@ class Interpreter:
         if type(seq) is str:
             gs = self.glyphs(seq, node)
             return gs[self.index_of(idx, len(gs), node)]
-        self.fail(node, f'📍 只能用在列表或文字上，这里是{type_name(seq)}')
+        if type(seq) is Dictionary:
+            return self.dict_get(seq, idx, node)
+        self.fail(node, f'📍 只能用在列表、文字或字典上，这里是{type_name(seq)}')
+
+    def dict_key(self, key, node):
+        t = type(key)
+        if t is int or t is float:
+            return int, key
+        if t is str or t is bool or key is None:
+            return t, key
+        self.fail(node, f'字典的键必须是数字、文字、真假或空值，这里是{type_name(key)}')
+
+    def dict_get(self, mapping, key, node):
+        item = mapping.data.get(self.dict_key(key, node))
+        if item is None:
+            self.fail(node, f'字典里没有键「{self.brief(key)}」（可用 取值 指定默认值）')
+        return item[1]
+
+    def dict_set(self, mapping, key, value, node):
+        canonical = self.dict_key(key, node)
+        old = mapping.data.get(canonical)
+        self.ensure_fits(160, node)
+        mapping.data[canonical] = (key if old is None else old[0], value)
+        self.note_alloc(160, node)
 
     def index_of(self, idx, length, node):
         if type(idx) is float and idx.is_integer():
@@ -1354,10 +1461,8 @@ class Interpreter:
             env.vars[p.key] = a
         self.depth += 1
         try:
-            self.exec_block(func.body, env)
-            return None
-        except ReturnSignal as r:
-            return r.value
+            result = self.exec_block(func.body, env)
+            return None if result is None else result.value
         except PymojiError as e:
             e.trace.append((func.name, node.line))
             raise e.with_traceback(None)        # 丢掉 Python 自己的回溯记录，深层递归出错时不占内存
@@ -1377,11 +1482,11 @@ class Interpreter:
         if op == 'NOT':
             return not self.truthy(v)
         if op == 'LEN':
-            if type(v) is list:
+            if type(v) is list or type(v) is Dictionary:
                 return len(v)
             if type(v) is str:
                 return len(self.glyphs(v, node))
-            self.fail(node, f'📏 只能量列表或文字的长度，这里是{type_name(v)}')
+            self.fail(node, f'📏 只能量列表、文字或字典的长度，这里是{type_name(v)}')
         symbol = '📤' if op == 'POP' else '👀'
         if type(v) is not list:
             self.fail(node, f'{symbol} 只能用在列表上，这里是{type_name(v)}')
@@ -1390,7 +1495,10 @@ class Interpreter:
         return v.pop() if op == 'POP' else v[-1]
 
     def eval_binary(self, node, env):
-        return self.binary(node.op, self.eval(node.left, env), self.eval(node.right, env), node)
+        a, b = self.eval(node.left, env), self.eval(node.right, env)
+        if node.integer_op is not None and type(a) is int and type(b) is int:
+            return self.checked_number(node.integer_op(a, b), node)
+        return self.binary(node.op, a, b, node)
 
     def binary(self, op, a, b, node):
         ta, tb = type(a), type(b)
@@ -1398,26 +1506,7 @@ class Interpreter:
         b_num = tb is int or tb is float
         try:
             if a_num and b_num:
-                if op == '+':
-                    r = a + b
-                elif op == '-':
-                    r = a - b
-                elif op == '*':
-                    r = a * b
-                elif op == '/':
-                    if b == 0:
-                        self.fail(node, '不能除以 0')
-                    r = a // b if ta is int and tb is int and a % b == 0 else a / b
-                elif op == '//':
-                    if b == 0:
-                        self.fail(node, '不能除以 0')
-                    r = a // b
-                elif op == '%':
-                    if b == 0:
-                        self.fail(node, '不能对 0 取余数')
-                    r = a % b
-                else:
-                    r = self.power(a, b, node)
+                r = self.power(a, b, node) if op == '^' else NUMERIC_OPS[op](a, b)
                 return self.checked_number(r, node)
             if op == '+':
                 if ta is str or tb is str:
@@ -1434,6 +1523,8 @@ class Interpreter:
                     return self.repeat(a, b, node)
                 if (tb is str or tb is list) and a_num:
                     return self.repeat(b, a, node)
+        except ZeroDivisionError:
+            self.fail(node, '不能对 0 取余数' if op == '%' else '不能除以 0')
         except OverflowError:
             self.fail(node, '数字超出了能表示的范围')
         self.fail(node, f'{OP_SYMBOL[op]} 不能用在{type_name(a)}和{type_name(b)}之间')
@@ -1481,8 +1572,9 @@ class Interpreter:
         cost = 56 + 8 * n + inner_bytes * k
         self.ensure_fits(cost, node)
         self.charge((n >> 6) + ((inner_slots * k) >> 2), node)
-        if inner_slots:
-            r = [self.deep_copy(x, {}) if type(x) is list else x for _ in range(k) for x in seq]
+        if inner_bytes:
+            r = [self.deep_copy(x, {}) if type(x) in (list, Dictionary) else x
+                 for _ in range(k) for x in seq]
         else:
             r = seq * k
         self.note_alloc(cost, node)
@@ -1492,24 +1584,30 @@ class Interpreter:
     def nested_size(seq):
         """列表里嵌套的子列表一共占多少字节、有多少个格子（不算 seq 自己）。"""
         seen = {id(seq)}
-        todo = [x for x in seq if type(x) is list]
+        todo = [x for x in seq if type(x) in (list, Dictionary)]
         nbytes = slots = 0
         while todo:
             v = todo.pop()
             if id(v) in seen:
                 continue
             seen.add(id(v))
-            nbytes += 56 + 8 * len(v)
+            nbytes += 56 + (160 if type(v) is Dictionary else 8) * len(v)
             slots += len(v)
-            todo.extend(x for x in v if type(x) is list)
+            children = (item[1] for item in v.data.values()) if type(v) is Dictionary else v
+            todo.extend(x for x in children if type(x) in (list, Dictionary))
         return nbytes, slots
 
     def deep_copy(self, v, memo):
         if id(v) in memo:
             return memo[id(v)]
-        new = []
+        new = Dictionary() if type(v) is Dictionary else []
         memo[id(v)] = new
-        new.extend([self.deep_copy(x, memo) if type(x) is list else x for x in v])
+        if type(v) is Dictionary:
+            for key, (raw, value) in v.data.items():
+                new.data[key] = (raw, self.deep_copy(value, memo)
+                                 if type(value) in (list, Dictionary) else value)
+        else:
+            new.extend(self.deep_copy(x, memo) if type(x) in (list, Dictionary) else x for x in v)
         return new
 
     def eval_logic(self, node, env):
@@ -1529,9 +1627,9 @@ class Interpreter:
 
     def compare(self, op, a, b, node):
         if op == '==':
-            return self.equal(a, b)
+            return self.equal(a, b, node)
         if op == '!=':
-            return not self.equal(a, b)
+            return not self.equal(a, b, node)
         c = self.order(a, b, node)
         if op == '<':
             return c < 0
@@ -1541,38 +1639,104 @@ class Interpreter:
             return c <= 0
         return c >= 0
 
-    def equal(self, a, b):
+    def equal(self, a, b, node=None):
+        """逐格比较；正在比较的对象对再次出现时视为相等，离开该层后移除。"""
         ta, tb = type(a), type(b)
-        if (ta is int or ta is float) and (tb is int or tb is float):
-            return a == b
-        if ta is not tb:
-            return False                                  # ✅ 不等于 1，"1" 也不等于 1
-        if ta is list:
-            if a is b:
-                return True
-            if len(a) != len(b):
+        if ta not in (list, Dictionary) or tb is not ta:
+            if (ta is int or ta is float) and (tb is int or tb is float):
+                return a == b
+            if ta is not tb:
                 return False
-            self.steps += len(a) >> 2                     # 逐格比较也算工作量（下一步时统一检查上限）
-            for x, y in zip(a, b):
-                if not self.equal(x, y):
+            if ta is Function or ta is Builtin:
+                return a is b
+            if ta is str and node is not None:
+                self.charge(max(len(a), len(b)) >> 6, node)
+            return a == b
+        if node is None:
+            node = Const(None, None)
+        active, stack = set(), []
+        while True:
+            self.charge(1, node)
+            ta, tb = type(a), type(b)
+            if (ta is int or ta is float) and (tb is int or tb is float):
+                if a != b:
                     return False
-            return True
-        if ta is Function or ta is Builtin:
-            return a is b
-        return a == b
+            elif ta is not tb:
+                return False                              # ✅ 不等于 1，"1" 也不等于 1
+            elif ta is list or ta is Dictionary:
+                if len(a) != len(b):
+                    return False
+                pair = (id(a), id(b))
+                if a is not b and pair not in active:
+                    if ta is Dictionary:
+                        self.charge(len(a), node)
+                        if a.data.keys() != b.data.keys():
+                            return False
+                        items = _dict_value_pairs(a, b)
+                    else:
+                        items = zip(a, b)
+                    self.ensure_fits(512, node)
+                    active.add(pair)
+                    stack.append((iter(items), pair))
+                    self.note_alloc(512, node)
+            elif ta is Function or ta is Builtin:
+                if a is not b:
+                    return False
+            else:
+                if ta is str:
+                    self.charge(max(len(a), len(b)) >> 6, node)
+                if a != b:
+                    return False
+            while stack:
+                items, pair = stack[-1]
+                try:
+                    a, b = next(items)
+                    break
+                except StopIteration:
+                    stack.pop()
+                    active.remove(pair)
+            else:
+                return True
 
     def order(self, a, b, node):
         """比较大小：返回 -1 / 0 / 1。只有 数字和数字、文字和文字、列表和列表 能比。"""
         ta, tb = type(a), type(b)
-        if ((ta is int or ta is float) and (tb is int or tb is float)) or (ta is str and tb is str):
+        if ((ta is int or ta is float) and (tb is int or tb is float)):
             return (a > b) - (a < b)
-        if ta is list and tb is list:
-            self.steps += min(len(a), len(b)) >> 2
-            for x, y in zip(a, b):
-                if not self.equal(x, y):
-                    return self.order(x, y, node)
-            return (len(a) > len(b)) - (len(a) < len(b))
-        self.fail(node, f'{type_name(a)}和{type_name(b)}不能比较大小')
+        active, stack = set(), []
+        while True:
+            self.charge(1, node)
+            ta, tb = type(a), type(b)
+            if ((ta is int or ta is float) and (tb is int or tb is float)) or (ta is str and tb is str):
+                if ta is str:
+                    self.charge(max(len(a), len(b)) >> 6, node)
+                result = (a > b) - (a < b)
+                if result:
+                    return result
+            elif ta is list and tb is list:
+                pair = (id(a), id(b))
+                if a is not b and pair not in active:
+                    self.ensure_fits(512, node)
+                    active.add(pair)
+                    stack.append((iter(zip(a, b)), pair, (len(a) > len(b)) - (len(a) < len(b))))
+                    self.note_alloc(512, node)
+            else:
+                # 列表的相等元素无需比较大小，例如 🎁✅🎀 与 🎁✅🎀。
+                if not stack or not self.equal(a, b, node):
+                    self.fail(node, f'{type_name(a)}和{type_name(b)}不能比较大小')
+            while stack:
+                items, pair, length_order = stack[-1]
+                try:
+                    a, b = next(items)
+                    break
+                except StopIteration:
+                    stack.pop()
+                    active.remove(pair)
+                    if length_order:
+                        return length_order
+                    continue
+            else:
+                return 0
 
     def eval_input(self, node, env):
         try:
@@ -1594,7 +1758,7 @@ class Interpreter:
     # ─────────────── 显示与小工具 ───────────────
     @staticmethod
     def truthy(v):
-        """什么算“真”：❌、🕳️、0、空文字、空列表算假，其余都算真。"""
+        """什么算“真”：❌、🕳️、0、空文字、空列表、空字典算假，其余都算真。"""
         if v is None or v is False:
             return False
         if v is True:
@@ -1602,7 +1766,7 @@ class Interpreter:
         t = type(v)
         if t is int or t is float:
             return v != 0
-        if t is str or t is list:
+        if t is str or t is list or t is Dictionary:
             return len(v) > 0
         return True
 
@@ -1650,21 +1814,34 @@ class Interpreter:
                 emit(STRING_CLOSE)
             else:
                 emit(v)
-        elif t is list:
+        elif t is list or t is Dictionary:
             if active is None:
                 active = set()
             if id(v) in active:
-                emit('🎁…🎀')                                 # 列表里装着它自己
+                emit('🎁…🎀' if t is list else '🗃️…')        # 容器里装着它自己
                 return
             active.add(id(v))
             if node is not None:
                 self.charge(len(v) >> 2, node)
+            if t is Dictionary:
+                emit('🗃️🤜🎁')
+                for k, (key, value) in enumerate(v.data.values()):
+                    if k:
+                        emit(', ')
+                    emit('🎁')
+                    self.render(key, emit, node, True, active)
+                    emit(', ')
+                    self.render(value, emit, node, True, active)
+                    emit('🎀')
+                emit('🎀🤛')
+                active.remove(id(v))
+                return
             emit('🎁')
             for k, x in enumerate(v):
                 if k:
                     emit(', ')
                 tx = type(x)
-                if tx is list or tx is str:
+                if tx is list or tx is str or tx is Dictionary:
                     self.render(x, emit, node, True, active)
                 else:
                     emit(self.scalar(x))
@@ -1677,7 +1854,7 @@ class Interpreter:
         """把值变成文字（用于 文字 ➕ 其他值）。"""
         if type(v) is str:
             return v
-        if type(v) is not list:
+        if type(v) is not list and type(v) is not Dictionary:
             return self.scalar(v)
         parts = []
         self.render(v, parts.append, node)
@@ -1775,7 +1952,7 @@ def _numeric_text(interp, value, node):
     if len(text) > 3000:
         interp.fail(node, '待转换的数字文字太长了（最多 3000 字符）')
     symbols = {'➕': '+', '＋': '+', '➖': '-', '−': '-', '－': '-', '．': '.'}
-    return ''.join(digit_of(g) if digit_of(g) is not None else symbols.get(g, g)
+    return ''.join(digit_of(g) if digit_of(g) is not None else symbols.get(normalize(g), g)
                    for g in split_graphemes(text))
 
 
@@ -1803,7 +1980,11 @@ def builtin_float(interp, args, node):
     if type(value) not in (str, int, float, bool):
         interp.fail(node, f'🔣 不能把{type_name(value)}转成小数')
     try:
-        result = float(_numeric_text(interp, value, node) if type(value) is str else value)
+        if type(value) is str:
+            value = _numeric_text(interp, value, node)
+            # 与 format_number 的 ×10^ 科学计数写法互通；格式仍交给 float 校验。
+            value = value.replace('×10^', 'e')
+        result = float(value)
     except (ValueError, OverflowError):
         interp.fail(node, '🔣 无法转成小数：需要有效的数字文字或可表示的数字')
     return interp.checked_number(result, node)
@@ -1819,7 +2000,8 @@ def builtin_bool(interp, args, node):
 
 def builtin_type(interp, args, node):
     return {int: '整数', float: '小数', str: '文字', list: '列表',
-            bool: '真假', type(None): '空值', Function: '函数', Builtin: '函数'}[type(args[0])]
+            Dictionary: '字典', bool: '真假', type(None): '空值',
+            Function: '函数', Builtin: '函数'}[type(args[0])]
 
 
 def _text_arg(interp, value, node, symbol):
@@ -1979,7 +2161,7 @@ def builtin_find(interp, args, node):
         return next((index for _, _, index in _text_matches(interp, value, needle, node, start)), -1)
     for i in range(start, len(seq)):
         interp.charge(1, node)
-        if interp.equal(seq[i], needle):
+        if interp.equal(seq[i], needle, node):
             return i
     return -1
 
@@ -2001,6 +2183,8 @@ def builtin_slice(interp, args, node):
 def builtin_copy(interp, args, node):
     if type(args[0]) is str:
         return args[0]
+    if type(args[0]) is Dictionary:
+        return builtin_dict(interp, args, node)
     seq = _sequence_arg(interp, args[0], node, '📋')
     return _make_list(interp, seq, len(seq), node)
 
@@ -2032,6 +2216,98 @@ def builtin_sum(interp, args, node):
 
 def builtin_abs(interp, args, node):
     return interp.checked_number(abs(interp.number(args[0], node, '📐 的参数')), node)
+
+
+def _rounded_decimal(interp, value, digits, node):
+    if not -3000 <= digits <= 3000:
+        interp.fail(node, '小数位数必须在 -3000 到 3000 之间')
+    value = Decimal(str(interp.number(value, node, '待舍入的值')))
+    precision = max(len(value.as_tuple().digits), value.adjusted() + 1, 1) + abs(digits) + 2
+    interp.ensure_fits(128 + 4 * precision, node)
+    interp.charge(precision >> 6, node)
+    with localcontext() as context:
+        context.prec = precision
+        return value.quantize(Decimal(1).scaleb(-digits), rounding=ROUND_HALF_UP)
+
+
+def builtin_round(interp, args, node):
+    digits = interp.integer(args[1], node, '🎯 的小数位数') if len(args) == 2 else 0
+    result = _rounded_decimal(interp, args[0], digits, node)
+    value = int(result) if len(args) == 1 or type(args[0]) is int else float(result)
+    return interp.checked_number(value, node)
+
+
+def builtin_fixed(interp, args, node):
+    digits = interp.integer(args[1], node, '🖋️ 的小数位数') if len(args) == 2 else 2
+    if digits < 0:
+        interp.fail(node, '🖋️ 的小数位数不能为负数')
+    value = _rounded_decimal(interp, args[0], digits, node)
+    # 避免显示舍入后为零的负号。
+    result = format(abs(value) if value.is_zero() else value, 'f')
+    interp.note_alloc(80 + 4 * len(result), node)
+    return result
+
+
+def _dict_arg(interp, value, node):
+    if type(value) is not Dictionary:
+        interp.fail(node, f'这里需要字典，收到的是{type_name(value)}')
+    return value
+
+
+def builtin_dict(interp, args, node):
+    result = Dictionary()
+    if not args:
+        return result
+    source = args[0]
+    if type(source) is Dictionary:
+        interp.ensure_fits(64 + 160 * len(source), node)
+        interp.charge(len(source), node)
+        result.data = source.data.copy()
+        interp.note_alloc(64 + 160 * len(result), node)
+        return result
+    pairs = _list_arg(interp, source, node, '🗃️ 的键值对')
+    interp.ensure_fits(64 + 160 * len(pairs), node)
+    for pair in pairs:
+        interp.charge(1, node)
+        if type(pair) is not list or len(pair) != 2:
+            interp.fail(node, '🗃️ 的每个键值对必须是恰有两项的列表')
+        interp.dict_set(result, pair[0], pair[1], node)
+    return result
+
+
+def builtin_keys(interp, args, node):
+    mapping = _dict_arg(interp, args[0], node)
+    return _make_list(interp, (key for key, _ in mapping.data.values()), len(mapping), node)
+
+
+def builtin_values(interp, args, node):
+    mapping = _dict_arg(interp, args[0], node)
+    return _make_list(interp, (value for _, value in mapping.data.values()), len(mapping), node)
+
+
+def builtin_items(interp, args, node):
+    mapping = _dict_arg(interp, args[0], node)
+    return _make_list(interp, ([key, value] for key, value in mapping.data.values()),
+                      len(mapping), node, 72)
+
+
+def builtin_get(interp, args, node):
+    mapping = _dict_arg(interp, args[0], node)
+    item = mapping.data.get(interp.dict_key(args[1], node))
+    return (args[2] if len(args) == 3 else None) if item is None else item[1]
+
+
+def builtin_contains(interp, args, node):
+    mapping = _dict_arg(interp, args[0], node)
+    return interp.dict_key(args[1], node) in mapping.data
+
+
+def builtin_delete(interp, args, node):
+    mapping = _dict_arg(interp, args[0], node)
+    canonical = interp.dict_key(args[1], node)
+    if canonical not in mapping.data:
+        interp.fail(node, f'字典里没有键「{interp.brief(args[1])}」')
+    return mapping.data.pop(canonical)[1]
 
 
 def _transform(interp, args, node, filtering):
@@ -2083,6 +2359,15 @@ _BUILTIN_SPECS = [
     ('🌱', '范围', builtin_range, (1, 2, 3)),
     ('🧮', '求和', builtin_sum, (1, 2)),
     ('📐', '绝对值', builtin_abs, (1,)),
+    ('🎯', '四舍五入', builtin_round, (1, 2)),
+    ('🖋️', '小数格式', builtin_fixed, (1, 2)),
+    ('🗃️', '字典', builtin_dict, (0, 1)),
+    ('🔑', '键', builtin_keys, (1,)),
+    ('💎', '值', builtin_values, (1,)),
+    ('🗂️', '键值对', builtin_items, (1,)),
+    ('🫴', '取值', builtin_get, (2, 3)),
+    ('🔐', '含键', builtin_contains, (2,)),
+    ('🗑️', '删除', builtin_delete, (2,)),
     ('🗺️', '映射', builtin_map, (2,)),
     ('🧹', '筛选', builtin_filter, (2,)),
 ]
@@ -2255,7 +2540,7 @@ def _setup_stdio():
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog='pymoji', description='pymoji v1.0：emoji 语法、多语种名字、矩形排版。')
+    ap = argparse.ArgumentParser(prog='pymoji', description=f'pymoji v{__version__}：emoji 语法、多语种名字、矩形排版。')
     ap.add_argument('file', nargs='?', help='要运行的程序文件（UTF-8 编码，扩展名建议用 .pymoji）')
     ap.add_argument('-c', dest='code', metavar='代码', help='直接运行一段 pymoji 代码')
     ap.add_argument('--max-mem', type=int, default=DEFAULT_MAX_MEM_MB, metavar='MB',
