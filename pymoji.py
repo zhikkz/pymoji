@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-pymoji 解释器 v1.0
+pymoji 解释器 v1.1
 =======================
 
 pymoji 是一门使用 emoji 语法、支持多语种名字、以矩形排版为规范的编程语言。
@@ -36,7 +36,7 @@ import sys
 import threading
 import unicodedata
 
-__version__ = '1.0'
+__version__ = '1.1'
 
 # ════════════════════════════════════════════════════════════════
 # 0. 资源上限（默认值，可用命令行参数修改）
@@ -240,15 +240,8 @@ class SourceMap:
                 self.line_starts.append(offset + 1)
             if offset == 0 and ch == '\ufeff':
                 continue
-            if ch in FORBIDDEN:
-                self.char_error(offset, f'禁止使用 ASCII 括号和引号「{ch}」；'
-                                '括号请用 🤜🤛，文字请用 🔤🔡')
             if ch.isspace():
                 continue
-            cat = unicodedata.category(ch)
-            if cat in ('Cc', 'Cs') or (cat == 'Cf' and ch != ZWJ
-                                       and not 0xE0020 <= ord(ch) <= 0xE007F):
-                self.char_error(offset, f'不允许控制字符 U+{ord(ch):04X}')
             chars.append(ch)
             self.offsets.append(offset)
         self.gs = split_graphemes(''.join(chars))
@@ -256,6 +249,41 @@ class SourceMap:
         for g in self.gs:
             self.starts.append(offset)
             offset += len(g)
+        self.check_code_characters()
+
+    def check_code_characters(self):
+        """字符禁令只约束代码和注释，文字数据允许任意 Unicode 字符。
+
+        在删除排版空白、合并字形之后识别文字，保证任意码点间插入空白仍不改变语义。
+        注释中的 🔤 不开启文字；文字中转义的 🔡 不结束文字。
+        """
+        state, escaped = 'code', False
+        for i, g in enumerate(self.gs):
+            key = keyword_form(g)
+            if state == 'string':
+                if escaped:
+                    escaped = False
+                elif key == ESCAPE:
+                    escaped = True
+                elif key == STRING_CLOSE:
+                    state = 'code'
+                continue
+            if state == 'code' and key == STRING_OPEN:
+                state = 'string'
+                continue
+            for j, ch in enumerate(g):
+                offset = self.offsets[self.starts[i] + j]
+                if ch in FORBIDDEN:
+                    self.char_error(offset, f'代码和注释中禁止使用 ASCII 括号和引号「{ch}」；'
+                                    '括号请用 🤜🤛，文字请用 🔤🔡')
+                cat = unicodedata.category(ch)
+                if cat in ('Cc', 'Cs') or (cat == 'Cf' and ch != ZWJ
+                                           and not 0xE0020 <= ord(ch) <= 0xE007F):
+                    self.char_error(offset, f'不允许控制字符 U+{ord(ch):04X}')
+            if key == COMMENT:
+                state = 'comment'
+            elif state == 'comment' and key == '🔚':
+                state = 'code'
 
     def physical_location(self, offset):
         line = bisect_right(self.line_starts, offset)
@@ -376,9 +404,22 @@ def _lex_string(sm, i, tokens):
             line, _ = sm.location(j)
             raise PymojiError('语法错误', '文字里的 🔤 请写成 🛡️🔤；文字结尾应为 🔡', line)
         if key == ESCAPE:
+            if j + 1 < len(gs) and gs[j + 1] in ('u', 'U'):
+                size = 4 if gs[j + 1] == 'u' else 8
+                digits = ''.join(gs[j + 2:j + 2 + size])
+                if len(digits) != size or not re.fullmatch('[0-9a-fA-F]{%d}' % size, digits):
+                    line, _ = sm.location(j)
+                    raise PymojiError('语法错误', f'Unicode 转义需要 {size} 位十六进制数字', line)
+                value = int(digits, 16)
+                if value > 0x10FFFF or 0xD800 <= value <= 0xDFFF:
+                    line, _ = sm.location(j)
+                    raise PymojiError('语法错误', 'Unicode 转义必须是有效的 Unicode 码点（不含代理项）', line)
+                chars.append(chr(value))
+                j += 2 + size
+                continue
             if j + 1 >= len(gs) or keyword_form(gs[j + 1]) not in STRING_ESCAPES:
                 line, _ = sm.location(j)
-                raise PymojiError('语法错误', '🛡️ 后面需要 ⬜、🔚、↔️、🔤、🔡 或 🛡️', line)
+                raise PymojiError('语法错误', '🛡️ 后面需要 ⬜、🔚、↔️、🔤、🔡、🛡️ 或 Unicode 转义 u/U', line)
             chars.append(STRING_ESCAPES[keyword_form(gs[j + 1])])
             j += 2
             continue
@@ -1666,7 +1707,7 @@ class Interpreter:
 
 
 # ════════════════════════════════════════════════════════════════
-# 10. 内置函数：👑 最大  🐜 最小  🎲 随机整数  🔃 排序
+# 10. 内置函数（emoji 名字与中文别名均为可覆盖的普通名字）
 # ════════════════════════════════════════════════════════════════
 def _values(args):
     """👑(3, 9, 4) 和 👑(🎁3, 9, 4🎀) 两种写法都支持。"""
@@ -1729,12 +1770,324 @@ def builtin_sort(interp, args, node):
     return result
 
 
-BUILTINS = [
-    ('👑', builtin_max, None),
-    ('🐜', builtin_min, None),
-    ('🎲', builtin_random, (1, 2)),
-    ('🔃', builtin_sort, (1,)),
+def _numeric_text(interp, value, node):
+    text = value.strip()
+    if len(text) > 3000:
+        interp.fail(node, '待转换的数字文字太长了（最多 3000 字符）')
+    symbols = {'➕': '+', '＋': '+', '➖': '-', '−': '-', '－': '-', '．': '.'}
+    return ''.join(digit_of(g) if digit_of(g) is not None else symbols.get(g, g)
+                   for g in split_graphemes(text))
+
+
+def builtin_int(interp, args, node):
+    value = args[0]
+    if len(args) == 2:
+        if type(value) is not str:
+            interp.fail(node, '🔢 指定进制时，第一个参数必须是文字')
+        base = interp.integer(args[1], node, '🔢 的进制')
+        if base != 0 and not 2 <= base <= 36:
+            interp.fail(node, '🔢 的进制必须是 0 或 2–36；0 表示按 0b/0o/0x 前缀识别')
+    else:
+        base = 10
+    if type(value) not in (str, int, float, bool):
+        interp.fail(node, f'🔢 不能把{type_name(value)}转成整数')
+    try:
+        result = int(_numeric_text(interp, value, node), base) if type(value) is str else int(value)
+    except (ValueError, OverflowError):
+        interp.fail(node, '🔢 无法转成整数：需要有效的整数文字或有限数字')
+    return interp.checked_number(result, node)
+
+
+def builtin_float(interp, args, node):
+    value = args[0]
+    if type(value) not in (str, int, float, bool):
+        interp.fail(node, f'🔣 不能把{type_name(value)}转成小数')
+    try:
+        result = float(_numeric_text(interp, value, node) if type(value) is str else value)
+    except (ValueError, OverflowError):
+        interp.fail(node, '🔣 无法转成小数：需要有效的数字文字或可表示的数字')
+    return interp.checked_number(result, node)
+
+
+def builtin_text(interp, args, node):
+    return interp.text(args[0], node)
+
+
+def builtin_bool(interp, args, node):
+    return interp.truthy(args[0])
+
+
+def builtin_type(interp, args, node):
+    return {int: '整数', float: '小数', str: '文字', list: '列表',
+            bool: '真假', type(None): '空值', Function: '函数', Builtin: '函数'}[type(args[0])]
+
+
+def _text_arg(interp, value, node, symbol):
+    if type(value) is not str:
+        interp.fail(node, f'{symbol} 需要文字，这里是{type_name(value)}')
+    return value
+
+
+def _list_arg(interp, value, node, symbol):
+    if type(value) is not list:
+        interp.fail(node, f'{symbol} 需要列表，这里是{type_name(value)}')
+    return value
+
+
+def _sequence_arg(interp, value, node, symbol):
+    if type(value) is str:
+        return interp.glyphs(value, node)
+    if type(value) is list:
+        return value
+    interp.fail(node, f'{symbol} 需要列表或文字，这里是{type_name(value)}')
+
+
+def _make_list(interp, values, length, node, item_bytes=0):
+    if length > sys.maxsize:
+        raise PymojiError('资源超限', '要新建的列表太长，超出了宿主能表示的长度', node.line)
+    cost = 56 + (8 + item_bytes) * length
+    interp.ensure_fits(cost, node)
+    interp.charge(length >> 6, node)
+    result = list(values)
+    interp.note_alloc(cost, node)
+    return result
+
+
+def _join_text(interp, parts, sep, node):
+    length = sum(len(p) for p in parts) + len(sep) * max(0, len(parts) - 1)
+    cost = 80 + 4 * length
+    interp.ensure_fits(cost, node)
+    interp.charge(length >> 6, node)
+    result = sep.join(parts)
+    interp.note_alloc(cost, node)
+    return result
+
+
+def _text_matches(interp, text, needle, node, start=0, limit=None):
+    """返回不重叠的（码点起点、码点终点、字形下标），只匹配完整字形。
+
+    用 str.find 搜索、紧凑数组检查边界，避免把组合 emoji 的一部分误认为匹配。
+    """
+    gs = interp.glyphs(text, node)
+    cost = 8 * (len(gs) + 1)
+    interp.ensure_fits(cost, node)
+    offsets = array('Q', [0])
+    for g in gs:
+        offsets.append(offsets[-1] + len(g))
+    interp.note_alloc(cost, node)
+    interp.charge(len(text), node)
+    pos, found = offsets[start], 0
+    while limit is None or found < limit:
+        pos = text.find(needle, pos)
+        if pos < 0:
+            return
+        end = pos + len(needle)
+        index = bisect_right(offsets, pos) - 1
+        end_index = bisect_right(offsets, end) - 1
+        if offsets[index] == pos and offsets[end_index] == end:
+            yield pos, end, index
+            found += 1
+            pos = end
+        else:
+            pos += 1
+
+
+def builtin_split(interp, args, node):
+    text = _text_arg(interp, args[0], node, '🧩')
+    if len(args) == 1 or args[1] is None:
+        # 空白切分不拆字形；例如带组合标记的空白字形作为整体处理。
+        gs = interp.glyphs(text, node)
+        parts, start, offset = [], None, 0
+        for g in gs:
+            if g.isspace():
+                if start is not None:
+                    interp.ensure_fits(56 + 88 * (len(parts) + 1) + 4 * len(text), node)
+                    parts.append(text[start:offset])
+                    start = None
+            elif start is None:
+                start = offset
+            offset += len(g)
+        if start is not None:
+            interp.ensure_fits(56 + 88 * (len(parts) + 1) + 4 * len(text), node)
+            parts.append(text[start:])
+    else:
+        sep = _text_arg(interp, args[1], node, '🧩 的分隔符')
+        if not sep:
+            gs = interp.glyphs(text, node)
+            return _make_list(interp, gs, len(gs), node)
+        parts, last = [], 0
+        for start, end, _ in _text_matches(interp, text, sep, node):
+            interp.ensure_fits(56 + 88 * (len(parts) + 1) + 4 * len(text), node)
+            parts.append(text[last:start])
+            last = end
+        interp.ensure_fits(56 + 88 * (len(parts) + 1) + 4 * len(text), node)
+        parts.append(text[last:])
+    interp.note_alloc(4 * len(text), node)
+    return _make_list(interp, parts, len(parts), node, 80)  # 每段另有文字对象
+
+
+def builtin_join(interp, args, node):
+    seq = _list_arg(interp, args[0], node, '🪢')
+    sep = _text_arg(interp, args[1], node, '🪢 的分隔符') if len(args) == 2 else ''
+    interp.ensure_fits(56 + 8 * len(seq), node)
+    parts = [interp.text(v, node) for v in seq]
+    return _join_text(interp, parts, sep, node)
+
+
+def builtin_strip(interp, args, node):
+    text = _text_arg(interp, args[0], node, '🧼')
+    gs = interp.glyphs(text, node)
+    start, end = 0, len(gs)
+    while start < end and gs[start].isspace():
+        start += 1
+    while end > start and gs[end - 1].isspace():
+        end -= 1
+    return _join_text(interp, gs[start:end], '', node)
+
+
+def builtin_replace(interp, args, node):
+    text, old, new = [_text_arg(interp, v, node, '🪄') for v in args[:3]]
+    if not old:
+        interp.fail(node, '🪄 要替换的旧文字不能为空')
+    count = interp.integer(args[3], node, '🪄 的次数') if len(args) == 4 else None
+    if count is not None and count < 0:
+        interp.fail(node, '🪄 的次数不能为负数')
+    if count == 0:
+        return text
+    parts, last, length = [], 0, 0
+    for start, end, _ in _text_matches(interp, text, old, node, limit=count):
+        length += start - last + len(new)
+        interp.ensure_fits(80 + 4 * (length + len(text) - end) + 16 * (len(parts) + 2), node)
+        parts.extend((text[last:start], new))
+        last = end
+    parts.append(text[last:])
+    return _join_text(interp, parts, '', node)
+
+
+def builtin_find(interp, args, node):
+    value, needle = args[:2]
+    seq = _sequence_arg(interp, value, node, '🔎')
+    start = interp.integer(args[2], node, '🔎 的起点') if len(args) == 3 else 0
+    if start < 0:
+        start = max(0, len(seq) + start)
+    if type(value) is str:
+        _text_arg(interp, needle, node, '🔎 在文字中查找的值')
+        if start > len(seq):
+            return -1
+        if not needle:
+            return start
+        return next((index for _, _, index in _text_matches(interp, value, needle, node, start)), -1)
+    for i in range(start, len(seq)):
+        interp.charge(1, node)
+        if interp.equal(seq[i], needle):
+            return i
+    return -1
+
+
+def builtin_slice(interp, args, node):
+    value = args[0]
+    seq = _sequence_arg(interp, value, node, '🍰')
+    bounds = [None if v is None else interp.integer(v, node, '🍰 的位置和步长') for v in args[1:]]
+    bounds += [None] * (3 - len(bounds))
+    if bounds[2] == 0:
+        interp.fail(node, '🍰 的步长不能是 0')
+    indices = range(*slice(*bounds).indices(len(seq)))
+    if type(value) is str:
+        parts = _make_list(interp, (seq[i] for i in indices), len(indices), node)
+        return _join_text(interp, parts, '', node)
+    return _make_list(interp, (seq[i] for i in indices), len(indices), node)
+
+
+def builtin_copy(interp, args, node):
+    if type(args[0]) is str:
+        return args[0]
+    seq = _sequence_arg(interp, args[0], node, '📋')
+    return _make_list(interp, seq, len(seq), node)
+
+
+def builtin_reverse(interp, args, node):
+    return builtin_slice(interp, [args[0], None, None, -1], node)
+
+
+def builtin_range(interp, args, node):
+    lo, hi = (1, args[0]) if len(args) == 1 else args[:2]
+    lo, hi = (interp.integer(v, node, '🌱 的范围') for v in (lo, hi))
+    step = interp.integer(args[2], node, '🌱 的步长') if len(args) == 3 else 1
+    if step == 0:
+        interp.fail(node, '🌱 的步长不能是 0')
+    length = max(0, (hi - lo) // step + 1)
+    values = range(lo, hi + (1 if step > 0 else -1), step)
+    item_bytes = 32 + max(abs(lo).bit_length(), abs(hi).bit_length()) // 8
+    return _make_list(interp, values, length, node, item_bytes)
+
+
+def builtin_sum(interp, args, node):
+    seq = _list_arg(interp, args[0], node, '🧮')
+    result = interp.number(args[1], node, '🧮 的初值') if len(args) == 2 else 0
+    for value in seq:
+        interp.charge(1, node)
+        result = interp.binary('+', result, interp.number(value, node, '🧮 的元素'), node)
+    return result
+
+
+def builtin_abs(interp, args, node):
+    return interp.checked_number(abs(interp.number(args[0], node, '📐 的参数')), node)
+
+
+def _transform(interp, args, node, filtering):
+    func, seq = args
+    if type(func) not in (Function, Builtin):
+        interp.fail(node, '映射和筛选的第一个参数必须是函数')
+    _list_arg(interp, seq, node, '筛选' if filtering else '映射')
+    snapshot = _make_list(interp, seq, len(seq), node)
+    interp.ensure_fits(56 + 8 * len(snapshot), node)
+    result = []
+    for value in snapshot:
+        interp.charge(1, node)
+        mapped = interp.call(func, [value], node)
+        if filtering:
+            if interp.truthy(mapped):
+                result.append(value)
+        else:
+            result.append(mapped)
+    interp.note_alloc(56 + 8 * len(result), node)
+    return result
+
+
+def builtin_map(interp, args, node):
+    return _transform(interp, args, node, False)
+
+
+def builtin_filter(interp, args, node):
+    return _transform(interp, args, node, True)
+
+
+_BUILTIN_SPECS = [
+    ('👑', '最大', builtin_max, None),
+    ('🐜', '最小', builtin_min, None),
+    ('🎲', '随机', builtin_random, (1, 2)),
+    ('🔃', '排序', builtin_sort, (1,)),
+    ('🔢', '整数', builtin_int, (1, 2)),
+    ('🔣', '小数', builtin_float, (1,)),
+    ('🧵', '文字', builtin_text, (1,)),
+    ('🔘', '真假', builtin_bool, (1,)),
+    ('🏷️', '类型', builtin_type, (1,)),
+    ('🧩', '分割', builtin_split, (1, 2)),
+    ('🪢', '连接', builtin_join, (1, 2)),
+    ('🧼', '去空白', builtin_strip, (1,)),
+    ('🪄', '替换', builtin_replace, (3, 4)),
+    ('🔎', '查找', builtin_find, (2, 3)),
+    ('🍰', '切片', builtin_slice, (1, 2, 3, 4)),
+    ('📋', '复制', builtin_copy, (1,)),
+    ('🪞', '反转', builtin_reverse, (1,)),
+    ('🌱', '范围', builtin_range, (1, 2, 3)),
+    ('🧮', '求和', builtin_sum, (1, 2)),
+    ('📐', '绝对值', builtin_abs, (1,)),
+    ('🗺️', '映射', builtin_map, (2,)),
+    ('🧹', '筛选', builtin_filter, (2,)),
 ]
+BUILTINS = [(name, fn, arities) for emoji, alias, fn, arities in _BUILTIN_SPECS
+            for name in (emoji, alias)]
 
 
 # ════════════════════════════════════════════════════════════════

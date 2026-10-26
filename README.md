@@ -2,9 +2,9 @@
 
 使用 emoji 表达程序结构的编程语言，支持中文、假名、字母、下划线和 emoji 标识符。单文件解释器，仅依赖 Python 3.8+ 标准库。
 
-支持变量、列表、条件、循环、函数、递归和闭包。`🔚` 分隔语句，`👉👈` 表示代码块，`🤜🤛` 表示括号，`🔤🔡` 包围文字。
+支持变量、列表、条件、循环、函数、递归和闭包，以及类型转换、文字处理、切片、映射和筛选。`🔚` 分隔语句，`👉👈` 表示代码块，`🤜🤛` 表示括号，`🔤🔡` 包围文字；文字内可以直接写括号、引号等字符。
 
-[语言使用说明](docs/language.md) · [1.0 正式版](https://github.com/zhikkz/pymoji/releases/tag/v1.0) · [示例程序](examples) · [反馈问题](https://github.com/zhikkz/pymoji/issues/new/choose)
+[语言使用说明](docs/language.md) · [版本更新](CHANGELOG.md) · [发行版](https://github.com/zhikkz/pymoji/releases) · [示例程序](examples) · [反馈问题](https://github.com/zhikkz/pymoji/issues/new/choose)
 
 ## 快速开始
 
@@ -26,12 +26,22 @@ python pymoji.py -c '总数⬅️1➕2🔚📢总数'
 
 输出：`3`。命令行中的单引号由 shell 处理，不属于 pymoji 源码。
 
+1.1 支持将文字转为数字，内置函数同时提供 emoji 名字与中文别名：
+
+```sh
+python pymoji.py -c '📢🔢🤜🔤123🔡🤛➕1'
+python pymoji.py -c '📢求和🤜映射🤜整数,分割🤜🔤12,34,56🔡,🔤,🔡🤛🤛🤛'
+```
+
+依次输出 `124`、`102`。字符串数据中的空白仍通过 `🛡️⬜` 等转义表示，保持任意矩形排版不改变程序含义。
+
 ## 示例程序
 
 | 程序 | 内容 |
 | --- | --- |
 | [你好世界](examples/你好世界.pymoji) | 汉字变量、赋值、计算和输出 |
 | [函数与列表](examples/函数与列表.pymoji) | 混合标识符、闭包、列表追加和排序 |
+| [文字与数据](examples/文字与数据.pymoji) | 自由文字、类型转换、拆分连接、切片、映射筛选 |
 | [FizzBuzz](examples/FizzBuzz.pymoji) | 范围循环和条件分支 |
 | [输入回显](examples/输入回显.pymoji) | 逐行读取并回显，EOF 时结束 |
 | [接雨水](examples/接雨水.pymoji) | 双指针、单调栈和随机数据交叉验证 |

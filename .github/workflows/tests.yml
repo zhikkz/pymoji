@@ -1,0 +1,29 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.8', '3.12', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m unittest -v test_pymoji
+      - name: Validate example formatting
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import pymoji
+          for path in Path('examples').glob('*.pymoji'):
+              pymoji.check_rectangle(path.read_text(encoding='utf-8'))
+          PY

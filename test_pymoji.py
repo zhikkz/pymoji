@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""pymoji 1.0 语义回归、任意排版、边界与命令行验证。只依赖 Python 标准库。"""
+"""pymoji 1.1 语义回归、任意排版、边界与命令行验证。只依赖 Python 标准库。"""
 import io
 import os
 import random
@@ -145,9 +145,10 @@ class PymojiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             pymoji.format_rectangle(source, 1)
 
-    def test_forbidden_ascii_delimiters_everywhere(self):
+    def test_ascii_delimiters_allowed_only_in_strings(self):
         for ch in '()\"\'':
-            for source in ('💭' + ch, '📢🔤' + ch + '🔡', ch):
+            self.assert_program('📢🔤' + ch + '🔡', ch + '\n')
+            for source in ('💭' + ch, '💭🔤' + ch + '🔡', '📢🔤甲🔡' + ch, ch):
                 with self.subTest(source=source):
                     rc, out, err = self.execute(source)
                     self.assertEqual(rc, 1)
@@ -155,6 +156,167 @@ class PymojiTests(unittest.TestCase):
                     self.assertIn('字符不合规', err)
         for source in ('📢（1）', '📢“甲”'):
             self.assertEqual(self.execute(source)[0], 1)
+
+    def test_unrestricted_string_data_and_unicode_escapes(self):
+        data = '''()"'[]{};:@#$&!?\\中文“引号”（括号）\x00\x1b\u200b\u202e'''
+        self.assert_program('📢🔤' + data + '🔡', data + '\n')
+        self.assert_program('📢🔤🛡️u0020🛡️u000D🛡️u00A0🛡️U0001F600🔡', ' \r\u00a0😀\n')
+        self.assert_program('📢🔤🛡️uD7FF🛡️uE000🛡️U0010FFFF🔡', '\ud7ff\ue000\U0010ffff\n')
+        self.assert_program('📢🔤🛡️🔡()🔡', '🔡()\n')
+        for source, fragment in [
+            ('📢🔤🛡️u12🔡', '4 位'), ('📢🔤🛡️uXYZW🔡', '4 位'),
+            ('📢🔤🛡️U00110000🔡', '有效的 Unicode'), ('📢🔤🛡️uD800🔡', '代理项'),
+            ('📢🔤🛡️U0000DFFF🔡', '代理项'),
+        ]:
+            with self.subTest(source=source):
+                self.assertIn(fragment, self.execute(source)[2])
+        source = 'a⬅️🔤()\"\'🛡️u00A0🛡️U0001F600🛡️🔡🔡🔚📢a'
+        signature = [(t.type, t.value) for t in pymoji.tokenize(source)]
+        for altered in (' \n'.join(source), pymoji.format_rectangle(source, 7)):
+            self.assertEqual([(t.type, t.value) for t in pymoji.tokenize(altered)], signature)
+            self.assertEqual(self.execute(altered), self.execute(source))
+
+    def test_type_conversions(self):
+        cases = [
+            ('📢🔢🤜🔤123🔡🤛➕1,整数🤜🔤➖１２🔡🤛,🔢🤜🔤1️⃣2️⃣🔡🤛', '124 -12 12\n'),
+            ('📢🔢🤜➖3.9🤛,🔢🤜✅🤛,🔢🤜❌🤛,🔢🤜🔤🛡️⬜+42🛡️⬜🔡🤛', '-3 1 0 42\n'),
+            ('📢🔢🤜🔤ff🔡,16🤛,🔢🤜🔤0b101🔡,0🤛,🔢🤜🔤1_000🔡🤛', '255 5 1000\n'),
+            ('📢🔣🤜🔤➖１２．５🔡🤛,小数🤜🔤1e3🔡🤛,🔣🤜✅🤛', '-12.5 1000 1\n'),
+            ('📢🧵🤜🎁1,✅🎀🤛,文字🤜🕳️🤛,文字🤜🔤原样🔡🤛', '🎁1, ✅🎀 🕳️ 原样\n'),
+            ('📢🔘🤜0🤛,真假🤜🔤0🔡🤛,真假🤜🎁🎀🤛,真假🤜🕳️🤛', '❌ ✅ ❌ ❌\n'),
+            ('📢🏷️🤜1🤛,类型🤜1.0🤛,类型🤜✅🤛,类型🤜🕳️🤛,类型🤜🎁🎀🤛,类型🤜🔢🤛',
+             '整数 小数 真假 空值 列表 函数\n'),
+            ('🏭f🤜🤛👉👈📢类型🤜f🤛,类型🤜🔤🔡🤛', '函数 文字\n'),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assert_program(source, expected)
+
+    def test_text_builtins(self):
+        cases = [
+            ('📢🧩🤜🔤🛡️⬜甲🛡️↔️乙🛡️🔚🔡🤛', '🎁🔤甲🔡, 🔤乙🔡🎀\n'),
+            ('📢分割🤜🔤a,,b,🔡,🔤,🔡🤛', '🎁🔤a🔡, 🔤🔡, 🔤b🔡, 🔤🔡🎀\n'),
+            ('📢🧩🤜🔤🔡🤛,🧩🤜🔤🔡,🔤,🔡🤛,🧩🤜🔤🔡,🔤🔡🤛', '🎁🎀 🎁🔤🔡🎀 🎁🎀\n'),
+            ('📢🪢🤜🎁1,✅,🕳️🎀,🔤,🔡🤛,连接🤜🎁🔤a🔡,🔤b🔡🎀🤛', '1,✅,🕳️ ab\n'),
+            ('📢🪢🤜🎁🎀,🔤,🔡🤛', '\n'),
+            ('📢🧼🤜🔤🛡️u00A0甲🛡️⬜乙🛡️u000D🔡🤛', '甲 乙\n'),
+            ('📢🪄🤜🔤aaaa🔡,🔤aa🔡,🔤b🔡🤛,替换🤜🔤aaaa🔡,🔤a🔡,🔤b🔡,2🤛', 'bb bbaa\n'),
+            ('📢替换🤜🔤甲🔡,🔤甲🔡,🔤🔡,0🤛,替换🤜🔤甲🔡,🔤甲🔡,🔤🔡🤛', '甲 \n'),
+            ('📢🔎🤜🔤甲乙甲🔡,🔤甲🔡,1🤛,查找🤜🔤甲🔡,🔤乙🔡🤛', '2 -1\n'),
+            ('📢查找🤜🔤abc🔡,🔤🔡,3🤛,查找🤜🔤abc🔡,🔤🔡,4🤛', '3 -1\n'),
+            ('📢查找🤜🎁✅,1,2🎀,1🤛,查找🤜🎁1,2,1🎀,1,➖1🤛', '1 2\n'),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assert_program(source, expected)
+
+    def test_grapheme_safe_text_operations(self):
+        family, flag, toned = '👨‍👩‍👧', '🇨🇳', '👍🏽'
+        text = family + flag + toned + 'e\u0301'
+        self.assert_program('📢🪢🤜🧩🤜🔤' + text + '🔡,🔤🔡🤛🤛', text + '\n')
+        self.assert_program('📢🪞🤜🔤' + text + '🔡🤛', 'e\u0301' + toned + flag + family + '\n')
+        self.assert_program('📢🍰🤜🔤' + text + '🔡,1,3🤛', flag + toned + '\n')
+        self.assert_program('📢查找🤜🔤' + text + '🔡,🔤' + toned + '🔡🤛', '2\n')
+        for fragment in ('👨', '🇨', '👍', 'e', '\u0301'):
+            with self.subTest(fragment=fragment):
+                literal = '🛡️u0301' if fragment == '\u0301' else fragment
+                self.assert_program('📢查找🤜🔤' + text + '🔡,🔤' + literal + '🔡🤛', '-1\n')
+                self.assert_program('📢替换🤜🔤' + text + '🔡,🔤' + literal + '🔡,🔤x🔡🤛', text + '\n')
+                self.assert_program('📢📏分割🤜🔤' + text + '🔡,🔤' + literal + '🔡🤛', '1\n')
+
+    def test_sequence_numeric_and_higher_order_builtins(self):
+        cases = [
+            ('📢🌱🤜4🤛,范围🤜3,1,➖1🤛,范围🤜0🤛,范围🤜1,5,2🤛',
+             '🎁1, 2, 3, 4🎀 🎁3, 2, 1🎀 🎁🎀 🎁1, 3, 5🎀\n'),
+            ('📢范围🤜4,2🤛,范围🤜1,3,➖1🤛,范围🤜2,2,➖2🤛', '🎁🎀 🎁🎀 🎁2🎀\n'),
+            ('📢🍰🤜🌱🤜5🤛,1,4🤛,切片🤜🌱🤜5🤛,🕳️,🕳️,➖2🤛', '🎁2, 3, 4🎀 🎁5, 3, 1🎀\n'),
+            ('📢切片🤜🌱🤜4🤛,➖2🤛,切片🤜🌱🤜4🤛,➖99,99🤛', '🎁3, 4🎀 🎁1, 2, 3, 4🎀\n'),
+            ('a⬅️🎁🎁1🎀,2🎀🔚b⬅️📋🤜a🤛🔚b📥3🔚b📍0📍0⬅️8🔚📢a,b',
+             '🎁🎁8🎀, 2🎀 🎁🎁8🎀, 2, 3🎀\n'),
+            ('a⬅️🌱🤜3🤛🔚📢🪞🤜a🤛,a,复制🤜🔤甲🔡🤛', '🎁3, 2, 1🎀 🎁1, 2, 3🎀 甲\n'),
+            ('📢🧮🤜🌱🤜10🤛🤛,求和🤜🎁🎀,2.5🤛,📐🤜➖3.5🤛', '55 2.5 3.5\n'),
+            ('🏭平方🤜n🤛👉↩️n🚀2👈📢🗺️🤜平方,🌱🤜4🤛🤛', '🎁1, 4, 9, 16🎀\n'),
+            ('🏭偶数🤜n🤛👉↩️n🥡2=0👈📢🧹🤜偶数,🌱🤜6🤛🤛', '🎁2, 4, 6🎀\n'),
+            ('📢映射🤜🔢,🎁🔤1🔡,🔤2🔡🎀🤛,筛选🤜🔘,🎁0,1,🕳️,🔤甲🔡🎀🤛',
+             '🎁1, 2🎀 🎁1, 🔤甲🔡🎀\n'),
+            ('a⬅️🌱🤜2🤛🔚🏭f🤜n🤛👉a📥9🔚↩️n👈📢映射🤜f,a🤛,a', '🎁1, 2🎀 🎁1, 2, 9, 9🎀\n'),
+            ('a⬅️🎁🎀🔚a📥a🔚b⬅️复制🤜a🤛🔚📢查找🤜b,a🤛,📏b', '0 1\n'),
+            ('整数⬅️7🔚📢整数,🔢🤜🔤8🔡🤛', '7 8\n'),
+        ]
+        for source, expected in cases:
+            with self.subTest(source=source):
+                self.assert_program(source, expected)
+
+    def test_builtin_errors_and_resource_limits(self):
+        cases = [
+            ('📢🔢🤜🔤abc🔡🤛', '无法转成整数'), ('📢🔢🤜🔤1.2🔡🤛', '无法转成整数'),
+            ('📢🔢🤜🕳️🤛', '不能把'), ('📢🔢🤜1,16🤛', '必须是文字'),
+            ('📢🔢🤜🔤1🔡,1🤛', '进制必须'), ('📢🔢🤜🔤1🔡,✅🤛', '要是整数'),
+            ('📢🔣🤜🎁🎀🤛', '不能把'), ('📢🔣🤜🔤abc🔡🤛', '无法转成小数'),
+            ('📢🔣🤜🔤NaN🔡🤛', '数字超出'), ('📢🔣🤜🔤1e999🔡🤛', '数字超出'),
+            ('📢🔣🤜2🚀5000🤛', '无法转成小数'),
+            ('📢分割🤜1🤛', '需要文字'), ('📢分割🤜🔤甲🔡,1🤛', '需要文字'),
+            ('📢连接🤜🔤甲🔡🤛', '需要列表'), ('📢去空白🤜1🤛', '需要文字'),
+            ('📢替换🤜🔤甲🔡,🔤🔡,🔤乙🔡🤛', '不能为空'),
+            ('📢替换🤜🔤甲🔡,🔤甲🔡,🔤乙🔡,➖1🤛', '不能为负数'),
+            ('📢查找🤜🔤甲🔡,1🤛', '需要文字'), ('📢查找🤜🎁🎀,1,0.5🤛', '要是整数'),
+            ('📢切片🤜1🤛', '需要列表或文字'), ('📢切片🤜🎁🎀,0,1,0🤛', '不能是 0'),
+            ('📢范围🤜1,3,0🤛', '不能是 0'), ('📢范围🤜1.2🤛', '要是整数'),
+            ('📢求和🤜🎁1,✅🎀🤛', '要是数字'), ('📢求和🤜🎁🎀,🔤甲🔡🤛', '要是数字'),
+            ('📢绝对值🤜✅🤛', '要是数字'), ('📢映射🤜1,🎁🎀🤛', '必须是函数'),
+            ('📢筛选🤜🔘,🔤甲🔡🤛', '需要列表'), ('📢整数🤜🤛', '需要 1 或 2 个参数'),
+            ('📢映射🤜🎲,🎁🎁🎀🎀🤛', '要是整数'),
+        ]
+        for source, fragment in cases:
+            with self.subTest(source=source):
+                rc, _, err = self.execute(source)
+                self.assertEqual(rc, 1)
+                self.assertIn(fragment, err)
+                self.assertNotIn('解释器内部错误', err)
+        for source in ('📢范围🤜1000000000🤛', '📢替换🤜🔤a🔡✖️1000,🔤a🔡,🔤b🔡✖️1000🤛'):
+            self.assertIn('内存上限', self.execute(source, max_mem_mb=1)[2])
+        self.assertIn('资源超限', self.execute('📢范围🤜2🚀200🤛', max_mem_mb=0)[2])
+        self.assertIn('数字文字太长', self.execute('📢整数🤜🔤1🔡✖️3001🤛')[2])
+        self.assertIn('整数太大', self.execute('📢整数🤜🔤f🔡✖️3000,16🤛')[2])
+        self.assertIn('整数太大', self.execute('📢求和🤜🎁2🚀9999,2🚀9999🎀🤛')[2])
+        rc, _, err = self.execute('🏭f🤜n🤛👉↩️映射🤜f,🎁n🎀🤛👈📢f🤜1🤛', max_depth=8)
+        self.assertEqual(rc, 1)
+        self.assertIn('超过了 8 层', err)
+
+    def test_builtin_names_and_aliases_are_callable(self):
+        interp = pymoji.Interpreter(max_mem_mb=0)
+        for emoji, alias, fn, arities in pymoji._BUILTIN_SPECS:
+            for name in (emoji, alias):
+                with self.subTest(name=name):
+                    tokens = pymoji.tokenize(name)
+                    self.assertEqual(tokens[0].type, 'NAME')
+                    self.assertEqual(len(tokens), 2)
+                    self.assertIs(interp.globals.vars[tokens[0].value].fn, fn)
+
+    def test_slice_range_and_text_against_python_reference(self):
+        interp = pymoji.Interpreter(max_mem_mb=0)
+        node = pymoji.Const(1, None)
+        rng = random.Random(20261026)
+        for trial in range(200):
+            seq = list(range(rng.randrange(20)))
+            start, stop = (rng.choice([None, rng.randrange(-30, 30)]) for _ in range(2))
+            step = rng.choice([None, -4, -2, -1, 1, 2, 4])
+            lo, hi = (rng.randrange(-20, 20) for _ in range(2))
+            stride = rng.choice([-4, -1, 1, 3])
+            text = ''.join(rng.choice('ab ()\"\'') for _ in range(rng.randrange(30)))
+            old = rng.choice(['a', 'b', 'ab', ' '])
+            new = rng.choice(['', 'x', 'yz'])
+            count = rng.randrange(5)
+            with self.subTest(trial=trial):
+                self.assertEqual(interp.call(interp.globals.vars['切片'], [seq, start, stop, step], node),
+                                 seq[slice(start, stop, step)])
+                expected = list(range(lo, hi + (1 if stride > 0 else -1), stride))
+                self.assertEqual(interp.call(interp.globals.vars['范围'], [lo, hi, stride], node), expected)
+                self.assertEqual(interp.call(interp.globals.vars['分割'], [text, old], node), text.split(old))
+                self.assertEqual(interp.call(interp.globals.vars['替换'], [text, old, new, count], node),
+                                 text.replace(old, new, count))
+                self.assertEqual(interp.call(interp.globals.vars['查找'], [text, old, lo], node),
+                                 text.find(old, lo))
 
     def test_syntax_and_runtime_error_regressions(self):
         cases = [
@@ -289,7 +451,7 @@ class PymojiTests(unittest.TestCase):
             return subprocess.run([sys.executable, script, *args], encoding='utf-8',
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 
-        self.assertEqual(cli('--version').stdout.strip(), 'pymoji 1.0')
+        self.assertEqual(cli('--version').stdout.strip(), 'pymoji 1.1')
         self.assertEqual(cli('-c', '📢1').stdout, '1\n')
         self.assertEqual(cli('-c', '📢1➗0').returncode, 1)
         self.assertEqual(cli('/no/such/pymoji/file').returncode, 2)
