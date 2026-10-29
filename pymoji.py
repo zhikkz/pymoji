@@ -2545,6 +2545,8 @@ def _setup_stdio():
 
 
 def main(argv=None):
+    # argparse 的 --help 和参数错误会提前输出并退出，也必须使用 UTF-8。
+    _setup_stdio()
     ap = argparse.ArgumentParser(prog='pymoji', description=f'pymoji v{__version__}：emoji 语法、多语种名字、矩形排版。')
     ap.add_argument('file', nargs='?', help='程序文件（UTF-8，建议用 .pymoji）；- 表示从标准输入读取源码')
     ap.add_argument('-c', dest='code', metavar='代码', help='直接运行一段 pymoji 代码')
@@ -2562,7 +2564,6 @@ def main(argv=None):
     ap.add_argument('-o', '--output', metavar='文件', help='将矩形排版结果保存到文件，仅用于 --format')
     ap.add_argument('--version', action='version', version=f'pymoji {__version__}')
     args = ap.parse_args(argv)
-    _setup_stdio()
 
     if args.file and args.code is not None:
         ap.error('文件和 -c 只能选择一个')

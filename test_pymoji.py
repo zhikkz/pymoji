@@ -16,9 +16,9 @@ import pymoji
 
 class PymojiTests(unittest.TestCase):
     @staticmethod
-    def cli(*args, data=None):
+    def cli(*args, data=None, env=None):
         script = os.path.join(os.path.dirname(__file__), 'pymoji.py')
-        return subprocess.run([sys.executable, script, *args], input=data, encoding='utf-8',
+        return subprocess.run([sys.executable, script, *args], input=data, env=env, encoding='utf-8',
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
 
     def execute(self, source, data='', **options):
@@ -659,6 +659,17 @@ class PymojiTests(unittest.TestCase):
                 f.write('📢1\n ')
             self.assertEqual(self.cli(path, '--check').returncode, 0)
             self.assertEqual(self.cli(path, '--check-rectangle').returncode, 1)
+
+    def test_cli_help_and_argument_errors_use_utf8(self):
+        env = dict(os.environ, PYTHONIOENCODING='ascii', PYTHONUTF8='0')
+        result = self.cli('--help', env=env)
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertIn('pymoji v' + pymoji.__version__, result.stdout)
+        self.assertIn('标准输入', result.stdout)
+        result = self.cli('-c', '📢1', '--width', '无效', env=env)
+        self.assertEqual((result.returncode, result.stdout), (2, ''))
+        self.assertIn('无效', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
 
     def test_check_mode_reports_errors_and_rejects_conflicting_modes(self):
         for source, fragment in [('📢1🔚\n📢🤜2', '第 2 行'), ('📢(1)', '字符不合规')]:

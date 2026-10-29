@@ -17,8 +17,11 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ['3.8', '3.12', '3.14', '3.15']
+        python-version: ['3.12', '3.14', '3.15']
         include:
+          # Python 3.8 没有 Ubuntu 26.04 构建，不随 ubuntu-latest 迁移。
+          - os: ubuntu-22.04
+            python-version: '3.8'
           - os: windows-latest
             python-version: '3.12'
           - os: macos-latest
