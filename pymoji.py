@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright 2026 zhikkz
 """
-pymoji 解释器 v1.2
+pymoji 解释器 v1.3
 =======================
 
 pymoji 是一门使用 emoji 语法、支持多语种名字、以矩形排版为规范的编程语言。
@@ -16,6 +16,8 @@ pymoji 是一门使用 emoji 语法、支持多语种名字、以矩形排版为
 用法：
     python pymoji.py 程序.pymoji
     python pymoji.py -c '总数⬅️1➕2🔚📢总数'
+    python pymoji.py 程序.pymoji --check         # 只检查语法，不执行
+    python pymoji.py -                         # 从标准输入读取源码，读到 EOF 后执行
     python pymoji.py 程序.pymoji --max-mem 512 --max-depth 3000
     python pymoji.py 程序.pymoji --tokens          # 只做词法分析，列出记号（调试用）
     python pymoji.py 程序.pymoji --format --width 48 --output 矩形.pymoji
@@ -40,7 +42,7 @@ import sys
 import threading
 import unicodedata
 
-__version__ = '1.2'
+__version__ = '1.3'
 
 # ════════════════════════════════════════════════════════════════
 # 0. 资源上限（默认值，可用命令行参数修改）
@@ -1290,7 +1292,10 @@ class Interpreter:
         key = node.var.key
         k = 0
         while True:
-            value = start + k * step                     # 用乘法算，避免小数累加的误差
+            try:
+                value = start + k * step                 # 用乘法算，避免小数累加的误差
+            except OverflowError:
+                self.fail(node, '范围循环的数字超出了能表示的范围')
             if (step > 0 and value > end) or (step < 0 and value < end):
                 break
             self.steps += 1
@@ -2540,8 +2545,10 @@ def _setup_stdio():
 
 
 def main(argv=None):
+    # argparse 的 --help 和参数错误会提前输出并退出，也必须使用 UTF-8。
+    _setup_stdio()
     ap = argparse.ArgumentParser(prog='pymoji', description=f'pymoji v{__version__}：emoji 语法、多语种名字、矩形排版。')
-    ap.add_argument('file', nargs='?', help='要运行的程序文件（UTF-8 编码，扩展名建议用 .pymoji）')
+    ap.add_argument('file', nargs='?', help='程序文件（UTF-8，建议用 .pymoji）；- 表示从标准输入读取源码')
     ap.add_argument('-c', dest='code', metavar='代码', help='直接运行一段 pymoji 代码')
     ap.add_argument('--max-mem', type=int, default=DEFAULT_MAX_MEM_MB, metavar='MB',
                     help=f'运行时最多额外占用多少内存（MB），0 表示不限（默认 {DEFAULT_MAX_MEM_MB}）')
@@ -2549,6 +2556,7 @@ def main(argv=None):
                     help=f'函数最多嵌套调用多少层，最大 {DEPTH_HARD_LIMIT:,}（默认 {DEFAULT_MAX_DEPTH}）')
     ap.add_argument('--seed', type=int, default=None, metavar='N', help='🎲 的随机种子，让随机结果可以重现')
     modes = ap.add_mutually_exclusive_group()
+    modes.add_argument('--check', action='store_true', help='只检查字符和语法，不执行；通过时不输出')
     modes.add_argument('--tokens', action='store_true', help='只做词法分析，列出所有记号（调试用）')
     modes.add_argument('--format', dest='format_code', action='store_true', help='只排成矩形，不运行')
     modes.add_argument('--check-rectangle', action='store_true', help='只检查语法和矩形排版，不运行')
@@ -2556,7 +2564,6 @@ def main(argv=None):
     ap.add_argument('-o', '--output', metavar='文件', help='将矩形排版结果保存到文件，仅用于 --format')
     ap.add_argument('--version', action='version', version=f'pymoji {__version__}')
     args = ap.parse_args(argv)
-    _setup_stdio()
 
     if args.file and args.code is not None:
         ap.error('文件和 -c 只能选择一个')
@@ -2572,15 +2579,24 @@ def main(argv=None):
     if args.code is not None:
         source = args.code
     elif args.file:
+        source_name = '标准输入' if args.file == '-' else args.file
         try:
-            with open(args.file, encoding='utf-8-sig') as f:
-                source = f.read()
+            if args.file == '-':
+                # 源码严格按 UTF-8 解码，不能沿用运行时输入的替换错误字符策略。
+                stream = getattr(sys.stdin, 'buffer', None)
+                source = sys.stdin.read() if stream is None else stream.read().decode('utf-8-sig')
+            else:
+                with open(args.file, encoding='utf-8-sig') as f:
+                    source = f.read()
         except UnicodeDecodeError:
-            sys.stderr.write(f'📂 {args.file} 不是 UTF-8 编码的文本文件，请另存为 UTF-8 后再试\n')
+            sys.stderr.write(f'📂 {source_name} 不是 UTF-8 编码的文本，请转换为 UTF-8 后再试\n')
             return 2
         except OSError as e:
-            sys.stderr.write(f'📂 打不开文件 {args.file}：{e.strerror or e}\n')
+            sys.stderr.write(f'📂 无法读取 {source_name}：{e.strerror or e}\n')
             return 2
+        except KeyboardInterrupt:
+            sys.stderr.write('\n⏹️ 已中断\n')
+            return 130
     else:
         ap.print_help()
         return 2
@@ -2588,9 +2604,11 @@ def main(argv=None):
     if args.tokens:
         return dump_tokens(source)
 
-    if args.format_code or args.check_rectangle:
+    if args.check or args.format_code or args.check_rectangle:
         try:
-            if args.format_code:
+            if args.check:
+                Parser(tokenize(source)).parse_program()
+            elif args.format_code:
                 formatted = format_rectangle(source, args.width)
                 if args.output:
                     with open(args.output, 'w', encoding='utf-8', newline='\n') as f:
@@ -2608,7 +2626,7 @@ def main(argv=None):
             sys.stderr.write(f'📂 写入文件失败：{e.strerror or e}\n')
             return 2
         except (RecursionError, MemoryError):
-            sys.stderr.write('⛔ 资源超限\n   排版检查时嵌套过深或可用内存不足\n')
+            sys.stderr.write('⛔ 资源超限\n   语法或排版检查时嵌套过深或可用内存不足\n')
             return 1
 
     max_depth = args.max_depth
