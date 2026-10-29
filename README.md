@@ -44,6 +44,15 @@ python pymoji.py examples/字典与数值.pymoji
 
 第一条输出 `0.3 0.30`；第二条演示字频统计和带缓存的斐波那契函数。
 
+1.3 增加独立语法检查和标准输入源码，方便编辑器、脚本与管道使用：
+
+```sh
+python pymoji.py examples/你好世界.pymoji --check
+printf '%s\n' '📢1➕2' | python pymoji.py -
+```
+
+第一条只检查语法，通过时无输出；第二条输出 `3`。`-` 会将标准输入读到 EOF 后作为完整源码处理；程序需要用 `👂` 读取数据时，使用文件或 `-c` 提供源码。
+
 ## 示例程序
 
 | 程序 | 内容 |
@@ -65,13 +74,14 @@ python pymoji.py examples/接雨水.pymoji --seed 1
 规范代码排成矩形；空格、缩进和实际换行不改变程序含义。
 
 ```sh
+python pymoji.py 程序.pymoji --check
 python pymoji.py 程序.pymoji --format --width 48 -o 成品.pymoji
 python pymoji.py 成品.pymoji --check-rectangle
 python pymoji.py 成品.pymoji --tokens
 python pymoji.py --help
 ```
 
-`--format`、`--check-rectangle` 和 `--tokens` 均不执行程序。源码使用 UTF-8，扩展名建议为 `.pymoji`。
+`--check`、`--format`、`--check-rectangle` 和 `--tokens` 互斥，均不执行程序；除 `--tokens` 只做词法分析外，其他三项都会检查语法。源码使用 UTF-8，扩展名建议为 `.pymoji`。
 
 源码行数、执行步数、输入输出行数不设固定上限；内存、调用深度和整数保护详见[运行选项与边界](docs/language.md#运行选项与边界)。
 

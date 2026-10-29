@@ -9,11 +9,18 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import pymoji
 
 
 class PymojiTests(unittest.TestCase):
+    @staticmethod
+    def cli(*args, data=None):
+        script = os.path.join(os.path.dirname(__file__), 'pymoji.py')
+        return subprocess.run([sys.executable, script, *args], input=data, encoding='utf-8',
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+
     def execute(self, source, data='', **options):
         out, err = io.StringIO(), io.StringIO()
         rc = pymoji.run_source(source, out=out, err=err, inp=io.StringIO(data), **options)
@@ -81,6 +88,21 @@ class PymojiTests(unittest.TestCase):
         for source, expected in cases:
             with self.subTest(source=source):
                 self.assert_program(source, expected)
+
+    def test_range_overflow_preserves_language_error_and_call_trace(self):
+        for start, step in (('2🚀2000', '0.5'), ('0.5', '2🚀2000')):
+            source = ('🏭f🤜🤛👉\n🔂i🛫' + start + '🛬2🚀2000👣' + step +
+                      '👉👈\n👈\nf🤜🤛')
+            with self.subTest(start=start, step=step):
+                rc, out, err = self.execute(source)
+                self.assertEqual((rc, out), (1, ''))
+                self.assertIn('运行错误（第 2 行）', err)
+                self.assertIn('范围循环的数字超出了能表示的范围', err)
+                self.assertIn('第 4 行调用 🏭f', err)
+                self.assertNotIn('解释器内部错误', err)
+        # 仍允许大整数范围和普通的小数范围。
+        self.assert_program('n⬅️2🚀2000🔚🔂i🛫n🛬n➕2👉📢i➖n👈', '0\n1\n2\n')
+        self.assert_program('🔂i🛫0.5🛬1.5👣0.5👉📢i👈', '0.5\n1\n1.5\n')
 
     def test_cyclic_comparisons_find_sort_and_extrema(self):
         setup = 'a⬅️🎁🎀🔚a📥a🔚b⬅️🎁🎀🔚b📥b🔚'
@@ -601,11 +623,7 @@ class PymojiTests(unittest.TestCase):
                     self.assertEqual(actual, expected)
 
     def test_command_line_modes_and_exit_codes(self):
-        script = os.path.join(os.path.dirname(__file__), 'pymoji.py')
-
-        def cli(*args):
-            return subprocess.run([sys.executable, script, *args], encoding='utf-8',
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        cli = self.cli
 
         self.assertEqual(cli('--version').stdout.strip(), 'pymoji ' + pymoji.__version__)
         self.assertIn('pymoji v' + pymoji.__version__, cli('--help').stdout)
@@ -627,6 +645,81 @@ class PymojiTests(unittest.TestCase):
             self.assertEqual(cli(path, '--check-rectangle').returncode, 0)
             self.assertEqual(cli(path).stdout, '1\n')
             self.assertEqual(cli('-c', '📢1\n ', '--check-rectangle').returncode, 1)
+
+    def test_check_mode_never_executes_and_accepts_free_layout(self):
+        sources = ['', '💭只有注释', '📢1\n ', '📢未知变量', '📢1➗0',
+                   '📢👂', '🔁✅👉📢1👈', '\ufeff📢7']
+        for source in sources:
+            with self.subTest(source=source):
+                result = self.cli('-c', source, '--check')
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, '自由排版.pymoji')
+            with open(path, 'w', encoding='utf-8-sig') as f:
+                f.write('📢1\n ')
+            self.assertEqual(self.cli(path, '--check').returncode, 0)
+            self.assertEqual(self.cli(path, '--check-rectangle').returncode, 1)
+
+    def test_check_mode_reports_errors_and_rejects_conflicting_modes(self):
+        for source, fragment in [('📢1🔚\n📢🤜2', '第 2 行'), ('📢(1)', '字符不合规')]:
+            result = self.cli('-c', source, '--check')
+            self.assertEqual((result.returncode, result.stdout), (1, ''))
+            self.assertIn(fragment, result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+        result = self.cli('-c', '📢' + '🤜' * 2000 + '1' + '🤛' * 2000, '--check')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('资源超限', result.stderr)
+        for mode in ('--tokens', '--format', '--check-rectangle'):
+            self.assertEqual(self.cli('-c', '📢1', '--check', mode).returncode, 2)
+        self.assertEqual(self.cli('/no/such/pymoji/file', '--check').returncode, 2)
+        self.assertEqual(self.cli('-c', '📢1', '--check', '-o', 'x').returncode, 2)
+
+    def test_stdin_source_execution_and_runtime_input(self):
+        for source, expected in [('📢🔤你好🌏🔡', '你好🌏\n'),
+                                 ('\ufeff总数⬅️2🔚\r\n📢总数➕3', '5\n'),
+                                 ('', ''), ('📢👂', '🕳️\n')]:
+            with self.subTest(source=source):
+                result = self.cli('-', data=source)
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, expected, ''))
+        result = self.cli('-c', '📢👂', data='42\n')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '42\n', ''))
+        self.assertEqual(self.cli('-', '-c', '📢1', data='📢2').returncode, 2)
+
+    def test_stdin_source_tool_modes(self):
+        result = self.cli('-', '--check', data='📢1➗0')
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, '', ''))
+        result = self.cli('-', '--tokens', data='📢1')
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('PRINT', result.stdout)
+        self.assertIn('EOF', result.stdout)
+        result = self.cli('-', '--format', '--width', '13', data='甲⬅️1🔚📢甲')
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertEqual(pymoji.check_rectangle(result.stdout)[0], 13)
+        self.assertEqual(self.cli('-', data=result.stdout).stdout, '1\n')
+        self.assertEqual(self.cli('-', '--check-rectangle', data=result.stdout).returncode, 0)
+        result = self.cli('-', '--check', data='📢1🔚\n📢🤜2')
+        self.assertEqual((result.returncode, result.stdout), (1, ''))
+        self.assertIn('第 2 行', result.stderr)
+
+    def test_stdin_source_rejects_invalid_utf8(self):
+        script = os.path.join(os.path.dirname(__file__), 'pymoji.py')
+        for mode in ([], ['--check'], ['--tokens'], ['--format'], ['--check-rectangle']):
+            with self.subTest(mode=mode):
+                result = subprocess.run([sys.executable, script, '-', *mode], input=b'\xff',
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                self.assertEqual((result.returncode, result.stdout), (2, b''))
+                self.assertIn('标准输入 不是 UTF-8', result.stderr.decode('utf-8'))
+
+    def test_stdin_source_text_stream_and_read_failures(self):
+        with patch('sys.stdin', io.StringIO('📢1➗0')):
+            self.assertEqual(pymoji.main(['-', '--check']), 0)
+        for exception, expected, fragment in [(OSError('读取失败'), 2, '无法读取 标准输入'),
+                                              (KeyboardInterrupt(), 130, '已中断')]:
+            err = io.StringIO()
+            with patch('sys.stdin', io.StringIO()) as inp, patch('sys.stderr', err):
+                with patch.object(inp, 'read', side_effect=exception):
+                    self.assertEqual(pymoji.main(['-', '--check']), expected)
+            self.assertIn(fragment, err.getvalue())
 
 
 if __name__ == '__main__':
